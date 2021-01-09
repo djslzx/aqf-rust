@@ -3,3 +3,12 @@
 [[package]]
 name = "aqf"
 version = "0.1.0"
+dependencies = [
+ "murmur3",
+]
+
+[[package]]
+name = "murmur3"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ead5388e485d38e622630c6b05afd3761a6701ff15c55b279ea5b31dcb62cff"

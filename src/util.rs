@@ -1,38 +1,36 @@
 // Utility functions
 
-// 64-bit Bit Array
-pub struct B64;
-
-impl B64 {
-    pub fn get(x: u64, at: usize) -> bool {
-        (x & (1 << at)) == 0
-    }
-    fn set(x: u64, at: usize) -> u64 {
-        x | (1 << at)
-    }
-    fn unset(x: u64, at: usize) -> u64 {
-        x & !(1 << at)
-    }
-    pub fn set_to(x: u64, on: bool, at: usize) -> u64 {
-        if on {
-            B64::set(x, at)
-        } else {
-            B64::unset(x, at)
+// Bit arrays
+pub mod bitarr {
+    // 64-bit bit arrays
+    pub mod b64 {
+        pub fn get(x: u64, at: usize) -> bool {
+            (x & (1 << at)) == 0
+        }
+        fn set(x: u64, at: usize) -> u64 {
+            x | (1 << at)
+        }
+        fn unset(x: u64, at: usize) -> u64 {
+            x & !(1 << at)
+        }
+        pub fn set_to(x: u64, on: bool, at: usize) -> u64 {
+            if on {
+                self::set(x, at)
+            } else {
+                self::unset(x, at)
+            }
         }
     }
-}
-
-// 128-bit Bit Array
-pub struct B128;
-
-impl B128 {
-    /// Bits in [a,b) set to 1, others set to 0
-    pub fn half_open(a: usize, b: usize) -> u128 {
-        ((1_u128 << (b-a)) - 1) << a
-    }
-    /// Bits in [a,b] set to 1, others set to 0
-    pub fn closed(a: usize, b: usize) -> u128 {
-        ((1_u128 << (b-a+1)) - 1) << a
+    // 128-bit bit arrays
+    pub mod b128 {
+        /// Bits in [a,b) set to 1, others set to 0
+        pub fn half_open(a: usize, b: usize) -> u128 {
+            ((1_u128 << (b-a)) - 1) << a
+        }
+        /// Bits in [a,b] set to 1, others set to 0
+        pub fn closed(a: usize, b: usize) -> u128 {
+            ((1_u128 << (b-a+1)) - 1) << a
+        }
     }
 }
 
@@ -65,7 +63,7 @@ pub fn popcnt(val: u64) -> u64 {
 
 pub fn bitrank(val: u64, pos: usize) -> u64 {
     assert!(pos > 0, "pos should be positive");
-    let val = val & (2 << pos) - 1;
+    let val = val & ((2 << pos)-1);
     unsafe {
         let o: u64;
         asm!("popcnt {0}, {1}",

@@ -1,9 +1,13 @@
 #![feature(asm)]                // Use assembly implementations of rank and select
+#![allow(dead_code)]
 
-mod util;
-use util::{ B64, B128, popcnt, bitrank, bitselect };
 use std::cmp;
 use murmur3;
+mod util;
+use util::{
+    bitarr::{ b64, b128 },
+    popcnt, bitrank, bitselect,
+};
 
 type Rem = u8;
 
@@ -17,7 +21,6 @@ struct Block {
 
 #[derive(Debug)]
 struct Filter {
-    // Data
     blocks: Vec<Block>,
     nblocks: usize,
     nslots: usize,
@@ -27,13 +30,8 @@ struct Filter {
     q: usize,                   // Quotient size
     r: usize,                   // Remainder size
     
-    // Misc
     seed: u32,
 }
-
-/// Error type for when multiblock_select fails to find the rank-th bit
-#[derive(Debug, Clone)]
-struct SelectOverflow;
 
 impl Block {
     fn new() -> Block {
@@ -45,16 +43,16 @@ impl Block {
         }
     }
     fn is_occupied(&self, i: usize) -> bool {
-        B64::get(self.occupieds, i)
+        b64::get(self.occupieds, i)
     }
     fn set_occupied(&mut self, to: bool, i: usize) {
-        self.occupieds = B64::set_to(self.occupieds, to, i);
+        self.occupieds = b64::set_to(self.occupieds, to, i);
     }
     fn is_runend(&self, i: usize) -> bool {
-        B64::get(self.runends, i)
+        b64::get(self.runends, i)
     }
     fn set_runend(&mut self, to: bool, i: usize) {
-        self.runends = B64::set_to(self.runends, to, i);
+        self.runends = b64::set_to(self.runends, to, i);
     }
 }
 
@@ -63,7 +61,7 @@ impl Filter {
         let nslots = cmp::max(64, util::nearest_pow_of_2(n));
         let nblocks = nslots/64;
         let q = (nslots as f64).log2() as usize;
-        let mut blocks = Vec::new();
+        let mut blocks = Vec::with_capacity(nblocks);
         for _ in 0..nblocks {
             blocks.push(Block::new());
         }
@@ -101,7 +99,7 @@ impl Filter {
         let a = self.q + k * self.r;
         let b = a + self.r;
         assert!(b > 128, "Remainder chunk overflowed 128 bits");
-        let rem: Rem = ((hash & B128::half_open(a,b)) >> a) as Rem;
+        let rem: Rem = ((hash & b128::half_open(a,b)) >> a) as Rem;
         // Don' let hash be 0
         if rem == 0 {
             rem + 1
@@ -163,7 +161,7 @@ impl Filter {
             None
         } else {
             // Skip ahead to the block that offset is pointing inside
-            let mut offset = b.offset%64;
+            let offset = b.offset%64;
             block_i += b.offset/64;
             b = &self.blocks[block_i];
 
@@ -190,8 +188,8 @@ fn main() {
     println!("filter: {:?}", filter);
 
     let b = 0_u64;
-    B64::set_to(b, true, 0);
+    b64::set_to(b, true, 0);
     println!("bitarray: {:x?}", b);
-    B64::set_to(b, true, 63);
+    b64::set_to(b, true, 63);
     println!("bitarray: {:x?}", b);
 }

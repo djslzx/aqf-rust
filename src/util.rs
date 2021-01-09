@@ -63,8 +63,8 @@ pub fn popcnt(val: u64) -> u64 {
     }
 }
 
-pub fn bitrank(val: u64, pos: i32) -> u64 {
-    assert!(pos > 0, "pos should be nonnegative");
+pub fn bitrank(val: u64, pos: usize) -> u64 {
+    assert!(pos > 0, "pos should be positive");
     let val = val & (2 << pos) - 1;
     unsafe {
         let o: u64;

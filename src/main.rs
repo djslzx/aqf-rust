@@ -12,7 +12,7 @@ struct Block {
     remainders: [Rem; 64],
     occupieds: u64,
     runends: u64,
-    offset: u8,
+    offset: usize,
 }
 
 #[derive(Debug)]
@@ -113,7 +113,7 @@ impl Filter {
     /// Finds the absolute index of the rank-th 1 bit in runends past 
     /// the start of the block_i-th block.
     /// Note: rank indexes from 1.
-    fn multiblock_select(&self, block_i: usize, rank: usize) -> Result<usize, SelectOverflow> {
+    fn multiblock_select(&self, block_i: usize, rank: usize) -> Option<usize> {
         assert!(block_i < self.nblocks, "Block index out of bounds");
         assert!(rank > 0, "Rank must index from 1");
 
@@ -136,16 +136,49 @@ impl Filter {
         }
 
         if loc >= self.nslots {
-            Err(SelectOverflow {})
+            None
         } else {
-            Ok(loc)
+            Some(loc)
         }
     }
+    // TODO: write multiblock_select using absolute index instead of block index
 
     /// Performs the blocked equivalent of the unblocked operation
     ///   select(Q.runends, rank(Q.occupieds, x)).
-    fn find_runend(&self, x: usize) -> usize {
-        0
+    fn find_runend(&self, x: usize) -> Option<usize> {
+        assert!(x < self.nslots, "Absolute index out of range");
+        let mut block_i = x/64;
+        let slot_i = x%64;
+        let mut b = &self.blocks[block_i];
+        let mut rank = bitrank(b.occupieds, slot_i);
+
+        // Exit early when 
+        // (1) slot is unoccupied and
+        // (2) block offset is before the slot (or offset is 0) and
+        // (3) there are no runs before the slot in the block
+        if !b.is_occupied(slot_i) &&
+            (b.offset == 0 || b.offset < slot_i) &&
+            rank == 0 
+        {
+            None
+        } else {
+            // Skip ahead to the block that offset is pointing inside
+            let mut offset = b.offset%64;
+            block_i += b.offset/64;
+            b = &self.blocks[block_i];
+
+            // Account for the runends before the offset in the current block
+            rank += if offset > 0 { 
+                bitrank(b.runends, offset-1)
+            } else {
+                0
+            };
+            assert!(rank > 0, "Rank should be positive for multiblock_select to work");
+            match self.multiblock_select(block_i, rank as usize) {
+                None => panic!("find_runend went off the edge"),
+                Some(loc) => Some(loc)
+            }
+        }
     }
 }
 

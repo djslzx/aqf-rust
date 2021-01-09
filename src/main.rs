@@ -1,11 +1,12 @@
-use std::cmp;
 mod util;
+use std::cmp;
+use util::B64;
 
 #[derive(Debug)]
 struct Block {
     remainders: [u8; 64],
-    occupieds: u64,
-    runends: u64,
+    occupieds: B64,
+    runends: B64,
     offset: u8,
 }
 
@@ -28,10 +29,22 @@ impl Block {
     fn new() -> Block {
         Block {
             remainders: [0; 64],
-            occupieds: 0,
-            runends: 0,
+            occupieds: B64::zero(),
+            runends: B64::zero(),
             offset: 0,
         }
+    }
+    fn is_occupied(&self, i: usize) -> bool {
+        self.occupieds.get(i)
+    }
+    fn set_occupied(&mut self, to: bool, i: usize) {
+        self.occupieds.set_to(to, i);
+    }
+    fn is_runend(&self, i: usize) -> bool {
+        self.runends.get(i)
+    }
+    fn set_runend(&mut self, to: bool, i: usize) {
+        self.runends.set_to(to, i);
     }
 }
 
@@ -46,11 +59,11 @@ impl Filter {
         }
 
         Filter {
-            blocks: blocks,
-            q: q,
-            r: r,
+            blocks,
+            q,
+            r,
             p: q + r,
-            nslots: nslots,
+            nslots,
             seed,
         }
     }
@@ -59,6 +72,13 @@ impl Filter {
 fn main() {
     let block = Block::new();
     println!("block: {:?}", block);
+
     let filter = Filter::new(64*2+1, 4, 0);
     println!("filter: {:?}", filter);
+
+    let mut b = B64::zero();
+    b.set_to(true, 0);
+    println!("bitarray: {:x?}", b);
+    b.set_to(true, 63);
+    println!("bitarray: {:x?}", b);
 }

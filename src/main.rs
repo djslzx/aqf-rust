@@ -1,9 +1,8 @@
 #![feature(asm)]                // Use assembly implementations of rank and select
 
 mod util;
+use util::{ B64, B128, popcnt, bitrank, bitselect };
 use std::cmp;
-use util::B64;
-use util::B128;
 use murmur3;
 
 type Rem = u8;
@@ -111,34 +110,42 @@ impl Filter {
         }
     }
 
-    /// Finds the absolute index of the rank-th 1 bit in runends
-    /// past the start of the block_i-th block.
+    /// Finds the absolute index of the rank-th 1 bit in runends past 
+    /// the start of the block_i-th block.
     /// Note: rank indexes from 1.
     fn multiblock_select(&self, block_i: usize, rank: usize) -> Result<usize, SelectOverflow> {
         assert!(block_i < self.nblocks, "Block index out of bounds");
         assert!(rank > 0, "Rank must index from 1");
 
-        let mut rank = rank;
-        let mut b = &self.blocks[block_i];
-        let mut s: usize;
-        let mut l: usize = block_i * 64;
+        let mut rank: u64 = rank as u64;
+        let mut b: &Block;                 // block pointer
+        let mut step: usize;               // select result
+        let mut loc: usize = block_i * 64; // absolute index of runend for input
 
+        // Step through each block, decrementing rank and incrementing loc
+        // to count seen runends and advance to the correct block
         loop {
-            s = util::bitselect(b.runends, (rank-1) as u64) as usize;
-            l += s;
-            rank -= util::popcnt(b.runends) as usize;
-            b = &self.blocks[l/64];
+            b = &self.blocks[loc/64]; 
+            rank -= popcnt(b.runends); // account for seen runends
+            step = bitselect(b.runends, rank-1) as usize; // use rank-1 b/c bitselect indexes from 0
+            loc += step;
             
-            if !(s==64 && l < self.nslots) {
+            if step != 64 || loc >= self.nslots {
                 break;
             }
         }
 
-        if l >= self.nslots {
+        if loc >= self.nslots {
             Err(SelectOverflow {})
         } else {
-            Ok(l)
+            Ok(loc)
         }
+    }
+
+    /// Performs the blocked equivalent of the unblocked operation
+    ///   select(Q.runends, rank(Q.occupieds, x)).
+    fn find_runend(&self, x: usize) -> usize {
+        0
     }
 }
 

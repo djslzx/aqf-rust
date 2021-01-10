@@ -1,5 +1,7 @@
 // Utility functions
 
+use std::num::Wrapping;
+
 // Bit arrays
 pub mod bitarr {
     // 64-bit bit arrays
@@ -136,17 +138,22 @@ pub fn popcnt(val: u64) -> u64 {
     }
 }
 
+/// Counts the number of 1 bits in val.
+/// Note: pos indexes from 0.
 pub fn bitrank(val: u64, pos: usize) -> u64 {
-    assert!(pos > 0, "pos should be positive");
-    let val = val & ((2 << pos)-1);
-    unsafe {
-        let o: u64;
-        asm!("popcnt {0}, {1}",
-             out(reg) o,
-             in(reg) val,
-             options(preserves_flags),
-        );
-        o
+    if pos >= 64 {
+        popcnt(val)
+    } else {
+        let val = val & ((2 << pos)-1);
+        unsafe {
+            let o: u64;
+            asm!("popcnt {0}, {1}",
+                 out(reg) o,
+                 in(reg) val,
+                 options(preserves_flags),
+            );
+            o
+        }
     }
 }
 
@@ -252,20 +259,22 @@ fn _select64(x: u64, k: u64) -> u64 {
     if k >= popcnt(x) {
         64
     } else {
-        let k_ones_step4: u64 = 0x1111111111111111;
-        let k_ones_step8: u64 = 0x0101010101010101;
-        let k_msbs_step8: u64 = 0x80 * k_ones_step8;
+        let k = Wrapping(k);
+        let k_ones_step4 = Wrapping(0x1111111111111111_u64);
+        let k_ones_step8 = Wrapping(0x0101010101010101_u64);
+        let k_msbs_step8 = Wrapping(0x80_u64) * k_ones_step8;
         
-        let mut s: u64 = x;
-        s = s - ((s & 0xA * k_ones_step4) >> 1);
-        s = (s & 0x3 * k_ones_step4) + ((s >> 2) & 0x3 * k_ones_step4);
-        s = (s + (s >> 4)) & 0xF * k_ones_step8;
-        let byte_sums: u64  = s * k_ones_step8;
+        let mut s = Wrapping(x);
+        s = s - ((s & Wrapping(0xA) * k_ones_step4) >> 1);
+        s = (s & Wrapping(0x3) * k_ones_step4) + ((s >> 2) & Wrapping(0x3) * k_ones_step4);
+        s = (s + (s >> 4)) & Wrapping(0xF) * k_ones_step8;
 
-        let k_step8 : u64 = k * k_ones_step8;
-        let geq_k_step8 : u64 = ((k_step8 | k_msbs_step8) - byte_sums) & k_msbs_step8;
-        let place: u64 = popcnt(geq_k_step8) * 8;
-        let byte_rank: u64 = k - (((byte_sums << 8) >> place) & (0xFFu64));
+        let byte_sums  = s * k_ones_step8;
+        let k_step8 = k * k_ones_step8;
+        let geq_k_step8 = ((k_step8 | k_msbs_step8) - byte_sums) & k_msbs_step8;
+
+        let place = popcnt(geq_k_step8.0) * 8;
+        let byte_rank = k.0 - (((byte_sums.0 << 8) >> place) & 0xFF);
         place + (K_SELECT_IN_BYTE[(((x >> place) & 0xFF) | (byte_rank << 8)) as usize] as u64)
     }
 }
@@ -287,4 +296,81 @@ pub fn bitselect(val: u64, rank: u64) -> u64 {
     }
 }
 
-
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_nearest_pow_2() {
+        assert_eq!(nearest_pow_of_2(1), 1);
+        assert_eq!(nearest_pow_of_2(2), 2);
+        assert_eq!(nearest_pow_of_2(3), 4);
+        assert_eq!(nearest_pow_of_2(4), 4);
+        assert_eq!(nearest_pow_of_2(5), 8);
+        assert_eq!(nearest_pow_of_2(8), 8);
+        assert_eq!(nearest_pow_of_2(9), 16);
+        assert_eq!(nearest_pow_of_2(16), 16);
+        assert_eq!(nearest_pow_of_2(17), 32);
+        assert_eq!(nearest_pow_of_2(32), 32);
+        assert_eq!(nearest_pow_of_2(33), 64);
+        assert_eq!(nearest_pow_of_2(65), 128);
+        assert_eq!(nearest_pow_of_2(129), 256);
+    }
+    #[test]
+    fn test_popcnt() {
+        assert_eq!(popcnt(0), 0);
+        assert_eq!(popcnt(1), 1);
+        assert_eq!(popcnt(2), 1);
+        assert_eq!(popcnt(3), 2);
+        assert_eq!(popcnt(0x10101010101010), 7);
+        assert_eq!(popcnt(0x10001000100010), 4);
+    }
+    #[test]
+    fn test_bitrank() {
+        assert_eq!(bitrank(0,0), 0);
+        assert_eq!(bitrank(0,64), 0);
+        assert_eq!(bitrank(1,0), 1);
+        assert_eq!(bitrank(1,64), 1);
+        assert_eq!(bitrank(0x100,0), 0);
+        assert_eq!(bitrank(0x100,1), 0);
+        assert_eq!(bitrank(0x100,16), 1);
+        assert_eq!(bitrank(0x100,17), 1);
+        assert_eq!(bitrank(0x100,64), 1);
+    }
+    #[test]
+    fn test_select64() {
+        for i in 0..64 {
+            // No 1s
+            assert_eq!(_select64(0,i), 64);
+            // One 1 
+            for j in 0..64 {
+                assert_eq!(_select64(1<<j,i), 
+                           if i < 1 { j } else { 64 });
+            }
+            // Two 1s
+            for a in 0..64 {
+                for b in (a+1)..64 {
+                    let x = (1<<a) | (1<<b);
+                    assert_eq!(_select64(x,i),
+                               if i < 1 { a }
+                               else if i < 2 { b } 
+                               else { 64 },
+                               "x=0x{:x}, a={}, b={}",
+                               x, a, b);
+                }
+            }
+            // Hard-coded
+            assert_eq!(_select64(0b10_100_010_101_001, 0), 0);
+            assert_eq!(_select64(0b10_100_010_101_001, 1), 3);
+            assert_eq!(_select64(0b10_100_010_101_001, 2), 5);
+            assert_eq!(_select64(0b10_100_010_101_001, 3), 7);
+            assert_eq!(_select64(0b10_100_010_101_001, 4), 11);
+            assert_eq!(_select64(0b10_100_010_101_001, 5), 13);
+        }
+    }
+    #[test]
+    fn test_bitselect() {
+        assert_eq!(bitselect(0,1), 64);
+        assert_eq!(bitselect(0,63), 64);
+    }
+}

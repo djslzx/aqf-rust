@@ -88,17 +88,13 @@ impl Filter {
     }
     /// Get the k-th remainder for the hash
     fn calc_rem(&self, hash: u128, k: usize) -> Rem {
-        // Clamp k to [0, r)
-        let k = if k >= self.r {
-            k % self.r
-        } else {
-            k
-        };
-        // Get k-th chunk of r bits:
-        // bits in [a, b) where a=q+kr, b=q+(k+1)r
+        // If hash can only make C remainders and k > C, let h_k = h_{k mod C}
+        let capacity = (128 - self.q)/self.r;
+        let k = k % capacity;
+        // Get k-th chunk of r bits: bits in [a, b) where a=q+kr, b=q+(k+1)r
         let a = self.q + k * self.r;
         let b = a + self.r;
-        assert!(b > 128, "Remainder chunk overflowed 128 bits");
+        assert!(b <= 128, "Remainder chunk overflowed 128 bits (b={})", b);
         let rem: Rem = ((hash & b128::half_open(a,b)) >> a) as Rem;
         // Don' let hash be 0
         if rem == 0 {
@@ -190,4 +186,19 @@ fn main() {
     println!("filter: {:?}", filter);
 
     println!("x={:x}", (1_i128 << 127) >> 10);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calc_rem() {
+        let filter = Filter::new(64, 4, 0);
+        println!("r={}, q={}", filter.r, filter.q); // r=4, q=6
+        let hash = 0x1234_ABCD_0000_0000__0000_0000_0000_0000_u128;
+        let first_rem = ((hash & b128::half_open(6,10)) >> 118) as Rem;
+        assert_eq!(filter.calc_rem(hash,0), first_rem, "first_rem=0x{:x}", first_rem);
+
+    }
 }

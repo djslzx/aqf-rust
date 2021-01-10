@@ -5,7 +5,7 @@ pub mod bitarr {
     // 64-bit bit arrays
     pub mod b64 {
         pub fn get(x: u64, at: usize) -> bool {
-            (x & (1 << at)) == 0
+            (x & (1 << at)) != 0
         }
         fn set(x: u64, at: usize) -> u64 {
             x | (1 << at)
@@ -18,6 +18,51 @@ pub mod bitarr {
                 self::set(x, at)
             } else {
                 self::unset(x, at)
+            }
+        }
+        #[cfg(test)]
+        mod tests {
+            use super::*;
+
+            #[test]
+            fn test_b64_get() {
+                let zeros = 0_u64;
+                let ones = !0_u64;
+                for i in 0..64 {
+                    assert_eq!(get(zeros, i), false, 
+                               "i={}", i);
+                    assert_eq!(get(ones, i), true,
+                               "i={}", i);
+                }
+            }
+            #[test]
+            fn test_b64_set() {
+                let b = 0_u64;
+                assert_eq!(set(b, 0), 1);
+                assert_eq!(set(b, 1), 2);
+                assert_eq!(set(b, 2), 4);
+                assert_eq!(set(b, 4), 16);
+                assert_eq!(set(b, 63), 1 << 63);
+            }
+            #[test]
+            fn test_unset() {
+                let ones = !0_u64;
+                let zeros = 0_u64;
+                for i in 0..64 {
+                    assert_eq!(unset(ones, i), !(1 << i));
+                    assert_eq!(unset(zeros, i), zeros);
+                }
+            }
+            #[test]
+            fn test_set_to() {
+                let zeros = 0_u64;
+                let ones = !0_u64;
+                for i in 0..64 {
+                    assert_eq!(set_to(zeros, true, i), 1 << i, "i={}", i);
+                    assert_eq!(set_to(zeros, false, i), 0, "i={}", i);
+                    assert_eq!(set_to(ones, true, i), !0, "i={}", i);
+                    assert_eq!(set_to(ones, false, i), !(1 << i), "i={}", i);
+                }
             }
         }
     }
@@ -211,3 +256,5 @@ pub fn bitselect(val: u64, rank: u64) -> u64 {
         _select64(val, rank)
     }
 }
+
+

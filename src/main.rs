@@ -178,6 +178,8 @@ impl Filter {
             }
         }
     }
+
+    
 }
 
 fn main() {
@@ -186,10 +188,4 @@ fn main() {
 
     let filter = Filter::new(64*2+1, 4, 0);
     println!("filter: {:?}", filter);
-
-    let b = 0_u64;
-    b64::set_to(b, true, 0);
-    println!("bitarray: {:x?}", b);
-    b64::set_to(b, true, 63);
-    println!("bitarray: {:x?}", b);
 }

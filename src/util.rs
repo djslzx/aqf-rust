@@ -36,6 +36,18 @@ pub mod bitarr {
                     assert_eq!(get(ones, i), true,
                                "i={}", i);
                 }
+                assert_eq!(get(0b1101_1001_1000, 0), false);
+                assert_eq!(get(0b1101_1001_1000, 1), false);
+                assert_eq!(get(0b1101_1001_1000, 2), false);
+                assert_eq!(get(0b1101_1001_1000, 3), true);
+                assert_eq!(get(0b1101_1001_1000, 4), true);
+                assert_eq!(get(0b1101_1001_1000, 5), false);
+                assert_eq!(get(0b1101_1001_1000, 6), false);
+                assert_eq!(get(0b1101_1001_1000, 7), true);
+                assert_eq!(get(0b1101_1001_1000, 8), true);
+                assert_eq!(get(0b1101_1001_1000, 9), false);
+                assert_eq!(get(0b1101_1001_1000, 10), true);
+                assert_eq!(get(0b1101_1001_1000, 11), true);
             }
             #[test]
             fn test_b64_set() {

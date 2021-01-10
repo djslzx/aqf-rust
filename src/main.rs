@@ -197,8 +197,9 @@ mod tests {
         let filter = Filter::new(64, 4, 0);
         println!("r={}, q={}", filter.r, filter.q); // r=4, q=6
         let hash = 0x1234_ABCD_0000_0000__0000_0000_0000_0000_u128;
-        let first_rem = ((hash & b128::half_open(6,10)) >> 118) as Rem;
+        let first_rem = ((hash & b128::half_open(6,10)) >> 6) as Rem;
+        let first_rem = if first_rem == 0 { 1 } else { first_rem };
         assert_eq!(filter.calc_rem(hash,0), first_rem, "first_rem=0x{:x}", first_rem);
-
+        
     }
 }

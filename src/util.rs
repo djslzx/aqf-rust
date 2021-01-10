@@ -51,12 +51,16 @@ pub mod bitarr {
             }
             #[test]
             fn test_b64_set() {
-                let b = 0_u64;
-                assert_eq!(set(b, 0), 1);
-                assert_eq!(set(b, 1), 2);
-                assert_eq!(set(b, 2), 4);
-                assert_eq!(set(b, 4), 16);
-                assert_eq!(set(b, 63), 1 << 63);
+                // 0 -> 1
+                assert_eq!(set(0, 0), 1);
+                assert_eq!(set(0, 1), 2);
+                assert_eq!(set(0, 2), 4);
+                assert_eq!(set(0, 4), 16);
+                assert_eq!(set(0, 63), 1 << 63);
+                // 0 -> 0
+                assert_eq!(set(!0, 0), !0);
+                assert_eq!(set(!0, 4), !0);
+                assert_eq!(set(!0, 63), !0);
             }
             #[test]
             fn test_unset() {
@@ -110,7 +114,6 @@ pub mod bitarr {
                 assert_eq!(half_open(0, 127), !(1<<127), "{:x}", half_open(0, 127));
                 assert_eq!(half_open(1, 127), !0 << 2 >> 1, "{:x}", half_open(1, 128));
             }
-
             #[test]
             fn test_closed() {
                 assert_eq!(closed(0, 0), 1, "{:x}", closed(0, 0));

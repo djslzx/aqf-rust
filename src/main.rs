@@ -188,4 +188,6 @@ fn main() {
 
     let filter = Filter::new(64*2+1, 4, 0);
     println!("filter: {:?}", filter);
+
+    println!("x={:x}", (1_i128 << 127) >> 10);
 }

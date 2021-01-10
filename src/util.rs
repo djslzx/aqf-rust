@@ -68,13 +68,43 @@ pub mod bitarr {
     }
     // 128-bit bit arrays
     pub mod b128 {
-        /// Bits in [a,b) set to 1, others set to 0
+        const I128_MIN: i128 = 1_i128 << 127;
+
+        /// Bits in [a,b) set to 1, others set to 0;
+        /// Indexing from left (MSB has index 0)
         pub fn half_open(a: usize, b: usize) -> u128 {
-            ((1_u128 << (b-a)) - 1) << a
+            assert!(a != b);
+            // ((I128_MIN >> b << 1) ^ (I128_MIN >> a << 1)) as u128        
+            ((I128_MIN >> (b-a-1)) as u128) >> a
         }
         /// Bits in [a,b] set to 1, others set to 0
+        /// Indexing from left (MSB has index 0)
         pub fn closed(a: usize, b: usize) -> u128 {
-            ((1_u128 << (b-a+1)) - 1) << a
+            ((I128_MIN >> b) ^ (I128_MIN >> a << 1)) as u128
+        }
+        #[cfg(test)]
+        mod tests {
+            use super::*;
+            
+            #[test]
+            fn test_half_open() {
+                assert_eq!(half_open(0, 1), 1 << 127, "{:x}", half_open(0, 1));
+                assert_eq!(half_open(127, 128), 1, "{:x}", half_open(127, 128));
+                assert_eq!(half_open(0, 128), !0, "{:x}", half_open(0, 128));
+                assert_eq!(half_open(0, 127), !1, "{:x}", half_open(0, 127));
+                assert_eq!(half_open(1, 128), (1<<127)-1, "{:x}", half_open(1, 128));
+                assert_eq!(half_open(1, 127), (!(1<<127))^1, "{:x}", half_open(1, 128));
+            }
+
+            #[test]
+            fn test_closed() {
+                assert_eq!(closed(0, 0), 1 << 127, "{:x}", closed(0, 0));
+                assert_eq!(closed(127, 127), 1, "{:x}", closed(127, 127));
+                assert_eq!(closed(0, 127), !0_u128, "{:x}", closed(0, 127));
+                assert_eq!(closed(1, 127), !(1<<127), "{:x}", closed(1, 127));
+                assert_eq!(closed(0, 126), !1, "{:x}", closed(0, 126));
+                assert_eq!(closed(1, 126), !(1<<127)^1, "{:x}", closed(1, 126));
+            }
         }
     }
 }

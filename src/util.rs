@@ -279,12 +279,24 @@ fn _select64(x: u64, k: u64) -> u64 {
     }
 }
 
+/// Returns the position of the rank-th 1 bit in val.
+/// Indexes from 0?
+// Adapted from C:
+// uint64_t i = 1ULL << rank;
+// asm("pdep %[val], %[mask], %[val]"
+//     : [val] "+r" (val)          // +r: register in a general register, read/write
+//     : [mask] "r" (i));          // r: register in a general register
+// asm("tzcnt %[bit], %[index]"
+//     : [index] "=r" (i)          // =r: register in a general register, written to
+//     : [bit] "g" (val)           // g: any registers except those that aren't general registers
+//     : "cc");
 pub fn bitselect(val: u64, rank: u64) -> u64 {
     if is_x86_feature_detected!("sse4.2") {
-        let mut i: u64 = 1 << rank;
+        let mut i = 1_u64 << rank; // 2^rank
+        // tzcnt(pdep(2^rank, val))
         unsafe {
             asm!("pdep {0}, {1}, {0}",
-                 "tzcnt {0}, {1}",
+                 "tzcnt {1}, {0}",
                  in(reg) val,
                  inout(reg) i,
                  options(preserves_flags),
@@ -371,6 +383,33 @@ mod tests {
     #[test]
     fn test_bitselect() {
         assert_eq!(bitselect(0,1), 64);
-        assert_eq!(bitselect(0,63), 64);
+        for i in 0..64 {
+            // No 1s
+            assert_eq!(bitselect(0,i), 64, "i={}", i);
+            // One 1 
+            for j in 0..64 {
+                assert_eq!(bitselect(1<<j,i), 
+                           if i < 1 { j } else { 64 });
+            }
+            // Two 1s
+            for a in 0..64 {
+                for b in (a+1)..64 {
+                    let x = (1<<a) | (1<<b);
+                    assert_eq!(bitselect(x,i),
+                               if i < 1 { a }
+                               else if i < 2 { b } 
+                               else { 64 },
+                               "x=0x{:x}, a={}, b={}",
+                               x, a, b);
+                }
+            }
+            // Hard-coded
+            assert_eq!(bitselect(0b10_100_010_101_001, 0), 0);
+            assert_eq!(bitselect(0b10_100_010_101_001, 1), 3);
+            assert_eq!(bitselect(0b10_100_010_101_001, 2), 5);
+            assert_eq!(bitselect(0b10_100_010_101_001, 3), 7);
+            assert_eq!(bitselect(0b10_100_010_101_001, 4), 11);
+            assert_eq!(bitselect(0b10_100_010_101_001, 5), 13);
+        }
     }
 }

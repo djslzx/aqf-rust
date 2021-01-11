@@ -312,15 +312,16 @@ mod tests {
         {
             let b = &mut filter.blocks[0];
             // First two runs each have two elts, third run has one elt
-            b.occupieds = 0b1101;
-            b.runends  = 0b11010;
-            assert_eq!(filter.multiblock_select(0, 0), Some(1));
+            b.occupieds = 0b101001;
+            b.runends   = 0b110010;
             assert_eq!(filter.rank_select(0), Some(1));
-            assert_eq!(filter.rank_select(1), None);
-            assert_eq!(filter.rank_select(2), Some(3));
+            assert_eq!(filter.rank_select(1), Some(1));
+            assert_eq!(filter.rank_select(2), Some(1));
             assert_eq!(filter.rank_select(3), Some(4));
-            for i in 4..64 {
-                assert_eq!(filter.rank_select(i), Some(4));
+            assert_eq!(filter.rank_select(4), Some(4));
+            assert_eq!(filter.rank_select(5), Some(5));
+            for i in 6..64 {
+                assert_eq!(filter.rank_select(i), Some(5));
             }
         }
     }

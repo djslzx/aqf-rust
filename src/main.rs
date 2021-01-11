@@ -170,9 +170,29 @@ impl Filter {
                 None
             } else {
                 // (rank-1) accounts for select's indexing from 0
-                self.multiblock_select(block_i, (rank-1) as usize)
+                if let Some(loc) = self.multiblock_select(block_i, (rank-1) as usize) {
+                    if loc < x {
+                        None
+                    } else {
+                        Some(loc)
+                    }
+                } else {
+                    None
+                }
             }
         }
+    }
+    /// Finds the first unused slot at or after absloc x.
+    fn first_unused_slot(&self, x: usize) -> usize {
+        let mut x = x;
+        while let Some(loc) = self.rank_select(x) {
+            if x <= loc {
+                x = loc + 1;
+            } else {
+                break;
+            }
+        }
+        x
     }
 }
 
@@ -305,12 +325,11 @@ mod tests {
             let b = &mut filter.blocks[0];
             b.occupieds = 1;
             b.runends = 1;
-            assert_eq!(bitrank(1, 63), 1);
-            for i in 0..64 {
-                assert_eq!(filter.rank_select(i), Some(0), "i={}", i);
+            assert_eq!(filter.rank_select(0), Some(0));
+            for i in 1..64 {
+                assert_eq!(filter.rank_select(i), None, "i={}", i);
             }
         }
-        println!("filter:{:?}", filter);
         // Filter with multiple runs
         {
             let b = &mut filter.blocks[0];
@@ -319,12 +338,12 @@ mod tests {
             b.runends   = 0b110010;
             assert_eq!(filter.rank_select(0), Some(1));
             assert_eq!(filter.rank_select(1), Some(1));
-            assert_eq!(filter.rank_select(2), Some(1));
+            assert_eq!(filter.rank_select(2), None);
             assert_eq!(filter.rank_select(3), Some(4));
             assert_eq!(filter.rank_select(4), Some(4));
             assert_eq!(filter.rank_select(5), Some(5));
             for i in 6..64 {
-                assert_eq!(filter.rank_select(i), Some(5));
+                assert_eq!(filter.rank_select(i), None);
             }
         }
     }
@@ -344,10 +363,10 @@ mod tests {
             b1.offset = 1;      // position where b1's first run's end should go,
                                 // i.e., position after runend from b0
             
-            for i in 0..128 {
+            for i in 0..64 {
                 assert_eq!(filter.rank_select(i), Some(64), "i={}", i);
             }
-            for i in 128..filter.nslots {
+            for i in 65..filter.nslots {
                 assert_eq!(filter.rank_select(i), None, "i={}", i);
             }
         }
@@ -371,10 +390,7 @@ mod tests {
                 assert_eq!(filter.rank_select(i), Some(64), "i={}", i);
             }
             assert_eq!(filter.rank_select(65), Some(65));
-            for i in 66..128 {
-                assert_eq!(filter.rank_select(i), Some(65), "i={}", i);
-            }
-            for i in 128..filter.nslots {
+            for i in 66..filter.nslots {
                 assert_eq!(filter.rank_select(i), None, "i={}", i);
             }
         }

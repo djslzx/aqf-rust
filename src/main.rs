@@ -104,29 +104,27 @@ impl Filter {
         }
     }
 
-    /// Finds the absolute index of the rank-th 1 bit in runends past
+    /// Finds the absolute index of the rank-th runend past
     /// the start of the block_i-th block.
-    /// Note: rank indexes from 1.
+    /// Note: rank indexes from 0.
     fn multiblock_select(&self, block_i: usize, rank: usize) -> Option<usize> {
         assert!(block_i < self.nblocks, "Block index out of bounds");
-        assert!(rank > 0, "Rank must index from 1");
 
         let mut rank: u64 = rank as u64;
-        let mut b: &Block; // block pointer
         let mut step: usize; // select result
         let mut loc: usize = block_i * 64; // absolute index of runend for input
+        let mut b: &Block; // block pointer
 
         // Step through each block, decrementing rank and incrementing loc
         // to count seen runends and advance to the correct block
         loop {
             b = &self.blocks[loc / 64];
-            rank -= popcnt(b.runends); // account for seen runends
-            step = bitselect(b.runends, rank - 1) as usize; // use rank-1 b/c bitselect indexes from 0
+            step = bitselect(b.runends, rank) as usize;
             loc += step;
-
             if step != 64 || loc >= self.nslots {
                 break;
             }
+            rank -= popcnt(b.runends); // account for seen runends
         }
 
         if loc >= self.nslots {
@@ -182,8 +180,6 @@ fn main() {
 
     let filter = Filter::new(64 * 2 + 1, 4, 0);
     println!("filter: {:?}", filter);
-
-    println!("x={:x}", (1_i128 << 127) >> 10);
 }
 
 #[cfg(test)]
@@ -222,5 +218,73 @@ mod tests {
         assert_eq!(filter.calc_rem(hash, 1), 0xf);
         assert_eq!(filter.calc_rem(hash, 2), 1);
         assert_eq!(filter.calc_rem(hash, 3), 0xf);
+    }
+    #[test]
+    fn test_multiblock_select_single_block() {
+        let mut filter = Filter::new(64, 4, 0);
+        let mut b;
+
+        // Empty filter
+        {
+            b = &mut filter.blocks[0];
+            b.occupieds = 0;
+            b.runends = 0;
+            assert_eq!(filter.multiblock_select(0, 0), None);
+        }
+        // Filter with one run
+        {
+            b = &mut filter.blocks[0];
+            b.occupieds = 1;
+            b.runends = 1;
+            assert_eq!(filter.multiblock_select(0, 0), Some(0));
+        }
+        // Filter with multiple runs
+        {
+            b = &mut filter.blocks[0];
+            // First two runs each have two elts, third run has one elt
+            b.occupieds = 0b1101;
+            b.runends  = 0b11010;
+            assert_eq!(filter.multiblock_select(0, 0), Some(1));
+            assert_eq!(filter.multiblock_select(0, 1), Some(3));
+            assert_eq!(filter.multiblock_select(0, 2), Some(4));
+            assert_eq!(filter.multiblock_select(0, 3), None);
+        }
+    }
+    #[test]
+    fn test_multiblock_select_multiple_blocks() {
+        let mut filter = Filter::new(64*3, 4, 0);
+        
+        // Filter with run starting in block 0 and ending in block 1
+        {
+            let b0 = &mut filter.blocks[0];
+            b0.occupieds = 1;
+            b0.runends = 0;
+
+            let b1 = &mut filter.blocks[1];
+            b1.occupieds = 0;
+            b1.runends = 1;
+            
+            assert_eq!(filter.multiblock_select(0, 0), Some(64));
+            assert_eq!(filter.multiblock_select(1, 0), Some(64));
+            assert_eq!(filter.multiblock_select(2, 0), None);
+        }
+
+        // Filter with two runs:
+        // A run starts in b0 and ends in b1, making b1 have nonzero offset
+        {
+            let b0 = &mut filter.blocks[0];
+            b0.occupieds = 0b11;
+            b0.runends = 0b01;
+
+            let b1 = &mut filter.blocks[1];
+            b1.occupieds = 0b10;
+            b1.runends = 0b11;
+            b1.offset = 1;
+            
+            assert_eq!(filter.multiblock_select(0, 0), Some(0));
+            assert_eq!(filter.multiblock_select(0, 1), Some(64));
+            assert_eq!(filter.multiblock_select(1, 0), Some(64));
+            assert_eq!(filter.multiblock_select(1, 1), Some(65));
+        }
     }
 }

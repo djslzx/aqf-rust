@@ -79,6 +79,15 @@ impl Filter {
             seed,
         }        
     }
+    fn remainder(&self, x: usize) -> Rem {
+        self.blocks[x/64].remainders[x%64]
+    }
+    fn runend(&self, x: usize) -> bool {
+        self.blocks[x/64].is_runend(x%64)
+    }
+    fn occupied(&self, x: usize) -> bool {
+        self.blocks[x/64].is_occupied(x%64)
+    }
     fn hash(&self, word: &str) -> u128 {
         let ref mut b = word.as_bytes();
         match murmur3::murmur3_x64_128(b, self.seed) {
@@ -110,6 +119,7 @@ impl Filter {
     /// Finds the absolute index of the rank-th runend past
     /// the start of the block_i-th block.
     /// Note: rank indexes from 0.
+    /// Returns None if no appropriate runend exists.
     fn multiblock_select(&self, block_i: usize, rank: usize) -> Option<usize> {
         assert!(block_i < self.nblocks, "Block index out of bounds");
 
@@ -139,6 +149,7 @@ impl Filter {
 
     /// Performs the blocked equivalent of the unblocked operation
     ///   select(Q.runends, rank(Q.occupieds, x)).
+    /// Returns Some(loc) if loc >= x; otherwise, returns None.
     fn rank_select(&self, x: usize) -> Option<usize> {
         assert!(x < self.nslots, "Absolute index out of range");
         let mut block_i = x / 64;
@@ -170,14 +181,14 @@ impl Filter {
                 None
             } else {
                 // (rank-1) accounts for select's indexing from 0
-                if let Some(loc) = self.multiblock_select(block_i, (rank-1) as usize) {
-                    if loc < x {
-                        None
-                    } else {
-                        Some(loc)
-                    }
-                } else {
-                    None
+                match self.multiblock_select(block_i, (rank-1) as usize) {
+                    Some(loc) =>
+                        if loc < x {
+                            None
+                        } else {
+                            Some(loc)
+                        },
+                    None => None,
                 }
             }
         }
@@ -193,6 +204,36 @@ impl Filter {
             }
         }
         x
+    }
+    /// Returns 1 if word is in the filter, 0 otherwise.
+    fn contains(&self, word: &str) -> bool {
+        let hash = self.hash(word);
+        let quot = self.calc_quot(hash);
+        let rem = self.calc_rem(hash, 0); // TODO: get 0-th rem for now
+        
+        if !self.occupied(quot) {
+            false
+        } else {
+            if let Some(mut loc) = self.rank_select(quot) {
+                loop {
+                    // If matching remainder found, return true
+                    if self.remainder(loc) == rem {
+                        break true; 
+                    }
+                    // Stop when l < 0, l < quot, or l is a runend
+                    if loc == 0 {
+                        break false;
+                    } else {
+                        loc -= 1;
+                        if loc < quot || self.runend(loc) {
+                            break false;
+                        }
+                    }
+                }
+            } else {
+                false
+            }
+        }
     }
 }
 

@@ -189,19 +189,38 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    
+    fn if_0_inc(x: Rem) -> Rem {
+        if x == 0 { 1 } else { x }
+    }
+    fn mask_rem(x: u128, start: usize, end: usize) -> Rem {
+        ((x & b128::half_open(start, end)) >> start) as Rem
+    }
 
     #[test]
-    fn test_calc_rem() {
+    fn test_calc_quot_rem() {
         let filter = Filter::new(64, 4, 0);
         println!("r={}, q={}", filter.r, filter.q); // r=4, q=6
         let hash = 0x1234_ABCD_0000_0000__0000_0000_0000_0000_u128;
-        let first_rem = ((hash & b128::half_open(6, 10)) >> 6) as Rem;
-        let first_rem = if first_rem == 0 { 1 } else { first_rem };
-        assert_eq!(
-            filter.calc_rem(hash, 0),
-            first_rem,
-            "first_rem=0x{:x}",
-            first_rem
-        );
+        for i in 0..(128-6)/4 {
+            let rem = if_0_inc(mask_rem(hash, 6 + 4*i, 10 + 4*i));
+            assert_eq!(filter.calc_rem(hash, i), rem);
+        }
+        // First remainder is 0, bumped up to 1 to satisfy nonzero rem invariant
+        assert_eq!(filter.calc_rem(0, 0), 1);
+        assert_eq!(filter.calc_rem(1, 0), 1);
+        assert_eq!(filter.calc_rem(0b11_1111, 0), 1);
+        // 7 set bits -> rem = 0b1
+        assert_eq!(filter.calc_rem(0b111_1111, 0), 1);
+        assert_eq!(filter.calc_rem(0b1111_1111, 0), 0b11);
+        assert_eq!(filter.calc_rem(0b1_1111_1111, 0), 0b111);
+        assert_eq!(filter.calc_rem(0b11_1111_1111, 0), 0b1111);
+
+        let hash = 0b11_1100_0011_1100_0011_1111;
+        assert_eq!(filter.calc_quot(hash), 0b11_1111);
+        assert_eq!(filter.calc_rem(hash, 0), 1); // 0x0
+        assert_eq!(filter.calc_rem(hash, 1), 0xf);
+        assert_eq!(filter.calc_rem(hash, 2), 1);
+        assert_eq!(filter.calc_rem(hash, 3), 0xf);
     }
 }

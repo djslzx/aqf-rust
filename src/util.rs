@@ -87,11 +87,12 @@ pub mod bitarr {
         /// Bits in [a,b) set to 1, others set to 0;
         /// Indexing from right (LSB has index 0)
         pub fn half_open(a: usize, b: usize) -> u128 {
-            assert!(a != b);
-            if b - a == 128 {
-                !0_u128
+            if a == b {
+                0
+            } else if b - a == 128 {
+                !0
             } else {
-                ((1_u128 << (b - a)) - 1) << a
+                ((1 << (b - a)) - 1) << a
             }
         }
         /// Bits in [a,b] set to 1, others set to 0

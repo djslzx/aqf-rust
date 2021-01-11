@@ -57,7 +57,10 @@ impl Block {
 }
 
 impl Filter {
-    fn new(n: usize, r: usize, seed: u32) -> Filter {
+    fn new(n: usize, r: usize) -> Filter {
+        Self::new_seeded(n, r, 0)
+    }
+    fn new_seeded(n: usize, r: usize, seed: u32) -> Filter {
         let nslots = cmp::max(64, util::nearest_pow_of_2(n));
         let nblocks = nslots / 64;
         let q = (nslots as f64).log2() as usize;
@@ -74,7 +77,7 @@ impl Filter {
             r,
             p: q + r,
             seed,
-        }
+        }        
     }
     fn hash(&self, word: &str) -> u128 {
         let ref mut b = word.as_bytes();
@@ -133,7 +136,6 @@ impl Filter {
             Some(loc)
         }
     }
-    // TODO: write multiblock_select using absolute index instead of block index
 
     /// Performs the blocked equivalent of the unblocked operation
     ///   select(Q.runends, rank(Q.occupieds, x)).
@@ -144,11 +146,12 @@ impl Filter {
         let mut b = &self.blocks[block_i];
         let mut rank = bitrank(b.occupieds, slot_i);
 
-        // Exit early when
+        // Exit early when the result of rank_select would be in a prior block.
+        // This happens when
         // (1) slot is unoccupied and
-        // (2) block offset is before the slot (or offset is 0) and
+        // (2) block offset is 0
         // (3) there are no runs before the slot in the block
-        if !b.is_occupied(slot_i) && (b.offset == 0 || b.offset < slot_i) && rank == 0 {
+        if !b.is_occupied(slot_i) && b.offset == 0 && rank == 0 {
             None
         } else {
             // Skip ahead to the block that offset is pointing inside
@@ -177,7 +180,7 @@ fn main() {
     let block = Block::new();
     println!("block: {:?}", block);
 
-    let filter = Filter::new(64 * 2 + 1, 4, 0);
+    let filter = Filter::new(64 * 2 + 1, 4);
     println!("filter: {:?}", filter);
 }
 
@@ -194,7 +197,7 @@ mod tests {
 
     #[test]
     fn test_calc_quot_rem() {
-        let filter = Filter::new(64, 4, 0);
+        let filter = Filter::new(64, 4);
         println!("r={}, q={}", filter.r, filter.q); // r=4, q=6
         let hash = 0x1234_ABCD_0000_0000__0000_0000_0000_0000_u128;
         for i in 0..(128-6)/4 {
@@ -220,7 +223,7 @@ mod tests {
     }
     #[test]
     fn test_multiblock_select_single_block() {
-        let mut filter = Filter::new(64, 4, 0);
+        let mut filter = Filter::new(64, 4);
         let mut b;
 
         // Empty filter
@@ -251,7 +254,7 @@ mod tests {
     }
     #[test]
     fn test_multiblock_select_multiple_blocks() {
-        let mut filter = Filter::new(64*3, 4, 0);
+        let mut filter = Filter::new(64*3, 4);
         
         // Filter with run starting in block 0 and ending in block 1
         {
@@ -288,7 +291,7 @@ mod tests {
     }
     #[test]
     fn test_rank_select_single_block() {
-        let mut filter = Filter::new(64, 4, 0);
+        let mut filter = Filter::new(64, 4);
 
         // Empty filter
         {
@@ -325,5 +328,55 @@ mod tests {
             }
         }
     }
-    // Blocks with offsets
+    #[test]
+    fn test_rank_select_multi_block() {
+        // Filter with run starting in block 0 and ending in block 1
+        {
+            let mut filter = Filter::new(64*3, 4);
+            let b0 = &mut filter.blocks[0];
+            b0.occupieds = 1;
+            b0.runends = 0;
+            b0.offset = 64;     // position of b0[0]'s runend
+
+            let b1 = &mut filter.blocks[1];
+            b1.occupieds = 0;
+            b1.runends = 1;
+            b1.offset = 1;      // position where b1's first run's end should go,
+                                // i.e., position after runend from b0
+            
+            for i in 0..128 {
+                assert_eq!(filter.rank_select(i), Some(64), "i={}", i);
+            }
+            for i in 128..filter.nslots {
+                assert_eq!(filter.rank_select(i), None, "i={}", i);
+            }
+        }
+        // Filter with two runs:
+        // A run starts in b0 and ends in b1, making b1 have nonzero offset
+        {
+            let mut filter = Filter::new(64*3, 4);
+            let b0 = &mut filter.blocks[0];
+            b0.occupieds = 0b11;
+            b0.runends = 0b01;
+            b0.offset = 0;
+
+            let b1 = &mut filter.blocks[1];
+            b1.occupieds = 0b10;
+            b1.runends = 0b11;
+            b1.offset = 1;
+            
+            assert_eq!(filter.rank_select(0), Some(0));
+            assert_eq!(filter.rank_select(1), Some(64));
+            for i in 2..65 {
+                assert_eq!(filter.rank_select(i), Some(64), "i={}", i);
+            }
+            assert_eq!(filter.rank_select(65), Some(65));
+            for i in 66..128 {
+                assert_eq!(filter.rank_select(i), Some(65), "i={}", i);
+            }
+            for i in 128..filter.nslots {
+                assert_eq!(filter.rank_select(i), None, "i={}", i);
+            }
+        }
+    }
 }

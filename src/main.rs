@@ -436,4 +436,59 @@ mod tests {
             }
         }
     }
+    #[test]
+    // Empty single-block filter 
+    fn test_contains_empty_single() {
+        let filter = Filter::new(64, 4);
+        for i in 0..64 {
+            let word = i.to_string();
+            assert!(!filter.contains(&word), "word='{}'", word);
+        }
+    }
+
+    #[test]
+    // 1-elt single-block filter
+    fn test_contains_one_single() {
+        let mut filter = Filter::new(64, 4);
+        let word = "apples";
+        
+        // Manually insert 'apples'
+        let hash = filter.hash(word);
+        let quot = filter.calc_quot(hash);
+        let rem = filter.calc_rem(hash, 0);
+        let b = &mut filter.blocks[0];
+        b.remainders[quot] = rem;
+        b.set_occupied(true, quot);
+        b.set_runend(true, quot);
+        
+        assert!(filter.contains("apples"));
+    }
+
+    #[test]
+    // Multi-elt single-block filter
+    fn test_contains_multi_single() {
+        let mut filter = Filter::new(64, 4);
+        // I checked that these words' quot/rems don't conflict
+        let words = ["apples", "bananas", "oranges"];
+
+        // Manually insert words
+        for word in words.iter() {
+            let hash = filter.hash(word);
+            let quot = filter.calc_quot(hash);
+            let rem = filter.calc_rem(hash, 0);
+            // println!("word={}, quot={:x}, rem={:x}", word, quot, rem);
+
+            let b = &mut filter.blocks[0];
+            b.remainders[quot] = rem;
+            b.set_occupied(true, quot);
+            b.set_runend(true, quot);
+        }
+        // Check that words are contained
+        for word in words.iter() {
+            assert!(filter.contains(word));
+        }
+    }
+    // TODO: to avoid issues with borrows that don't matter, change functions
+    // that take in a filter but use only its metadata so that they take in
+    // metadata items directly instead
 }

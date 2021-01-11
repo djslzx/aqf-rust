@@ -137,7 +137,7 @@ impl Filter {
 
     /// Performs the blocked equivalent of the unblocked operation
     ///   select(Q.runends, rank(Q.occupieds, x)).
-    fn find_runend(&self, x: usize) -> Option<usize> {
+    fn rank_select(&self, x: usize) -> Option<usize> {
         assert!(x < self.nslots, "Absolute index out of range");
         let mut block_i = x / 64;
         let slot_i = x % 64;
@@ -162,13 +162,12 @@ impl Filter {
             } else {
                 0
             };
-            assert!(
-                rank > 0,
-                "Rank should be positive for multiblock_select to work"
-            );
-            match self.multiblock_select(block_i, rank as usize) {
-                None => panic!("find_runend went off the edge"),
-                Some(loc) => Some(loc),
+            // If rank(Q.occupieds, x) == 0, then select gives an invalid result
+            if rank == 0 {
+                None
+            } else {
+                // (rank-1) accounts for select's indexing from 0
+                self.multiblock_select(block_i, (rank-1) as usize)
             }
         }
     }
@@ -287,4 +286,43 @@ mod tests {
             assert_eq!(filter.multiblock_select(1, 1), Some(65));
         }
     }
+    #[test]
+    fn test_rank_select_single_block() {
+        let mut filter = Filter::new(64, 4, 0);
+
+        // Empty filter
+        {
+            // No setup needed: filter blank by default
+            for i in 0..64 {
+                assert_eq!(filter.rank_select(i), None)
+            }
+        }
+        // Filter with one run
+        {
+            let b = &mut filter.blocks[0];
+            b.occupieds = 1;
+            b.runends = 1;
+            assert_eq!(bitrank(1, 63), 1);
+            for i in 0..64 {
+                assert_eq!(filter.rank_select(i), Some(0), "i={}", i);
+            }
+        }
+        println!("filter:{:?}", filter);
+        // Filter with multiple runs
+        {
+            let b = &mut filter.blocks[0];
+            // First two runs each have two elts, third run has one elt
+            b.occupieds = 0b1101;
+            b.runends  = 0b11010;
+            assert_eq!(filter.multiblock_select(0, 0), Some(1));
+            assert_eq!(filter.rank_select(0), Some(1));
+            assert_eq!(filter.rank_select(1), None);
+            assert_eq!(filter.rank_select(2), Some(3));
+            assert_eq!(filter.rank_select(3), Some(4));
+            for i in 4..64 {
+                assert_eq!(filter.rank_select(i), Some(4));
+            }
+        }
+    }
+    // Blocks with offsets
 }

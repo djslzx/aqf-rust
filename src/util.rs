@@ -159,7 +159,9 @@ pub fn bitrank(val: u64, pos: usize) -> u64 {
     if pos >= 64 {
         popcnt(val)
     } else {
-        let val = val & ((2 << pos) - 1);
+        let mask = 2 << pos;
+        let mask = if mask == 0 { !0 } else { mask-1 };
+        let val = val & mask;
         unsafe {
             let o: u64;
             asm!("popcnt {0}, {1}",
@@ -339,42 +341,49 @@ mod tests {
     }
     #[test]
     fn test_bitrank() {
-        assert_eq!(bitrank(0, 0), 0);
-        assert_eq!(bitrank(0, 64), 0);
-        assert_eq!(bitrank(1, 0), 1);
-        assert_eq!(bitrank(1, 64), 1);
+        for i in 0..64 {
+            assert_eq!(bitrank(0, i), 0, "i={}", i);
+            assert_eq!(bitrank(1, i), 1, "i={}", i);
+        }
+        for i in 0..64 {
+            for j in 0..64 {
+                assert_eq!(
+                    bitrank(1<<i, j),
+                    if j >= i { 1 } else { 0 },
+                    "i={}, j={}", i, j,
+                );
+            }
+        }
         assert_eq!(bitrank(0x100, 0), 0);
-        assert_eq!(bitrank(0x100, 1), 0);
-        assert_eq!(bitrank(0x100, 16), 1);
-        assert_eq!(bitrank(0x100, 17), 1);
+        assert_eq!(bitrank(0x100, 7), 0);
+        assert_eq!(bitrank(0x100, 8), 1);
+        assert_eq!(bitrank(0x100, 63), 1);
         assert_eq!(bitrank(0x100, 64), 1);
     }
     #[test]
     fn test_select64() {
+        // No 1s
         for i in 0..64 {
-            // No 1s
             assert_eq!(_select64(0, i), 64);
-            // One 1
+        }
+        // One 1
+        for i in 0..64 {
             for j in 0..64 {
                 assert_eq!(_select64(1 << j, i), if i < 1 { j } else { 64 });
             }
-            // Two 1s
+        }
+        // Two 1s
+        for i in 0..64 {
             for a in 0..64 {
                 for b in (a + 1)..64 {
                     let x = (1 << a) | (1 << b);
                     assert_eq!(
                         _select64(x, i),
-                        if i < 1 {
-                            a
-                        } else if i < 2 {
-                            b
-                        } else {
-                            64
-                        },
+                        if i < 1 { a } 
+                        else if i < 2 { b } 
+                        else { 64 },
                         "x=0x{:x}, a={}, b={}",
-                        x,
-                        a,
-                        b
+                        x, a, b,
                     );
                 }
             }
@@ -389,15 +398,18 @@ mod tests {
     }
     #[test]
     fn test_bitselect() {
-        assert_eq!(bitselect(0, 1), 64);
+        // No 1s
         for i in 0..64 {
-            // No 1s
             assert_eq!(bitselect(0, i), 64, "i={}", i);
-            // One 1
+        }
+        // One 1
+        for i in 0..64 {
             for j in 0..64 {
                 assert_eq!(bitselect(1 << j, i), if i < 1 { j } else { 64 });
             }
-            // Two 1s
+        }
+        // Two 1s
+        for i in 0..64 {
             for a in 0..64 {
                 for b in (a + 1)..64 {
                     let x = (1 << a) | (1 << b);

@@ -95,6 +95,7 @@ impl Filter {
             Err(_) => panic!("Failed to hash word"),
         }
     }
+    // Take first q bits of hash
     fn calc_quot(&self, hash: u128) -> usize {
         (hash & ((1_u128 << self.q) - 1)) as usize
     }
@@ -488,7 +489,53 @@ mod tests {
             assert!(filter.contains(word));
         }
     }
-    // TODO: to avoid issues with borrows that don't matter, change functions
-    // that take in a filter but use only its metadata so that they take in
-    // metadata items directly instead
+    #[test]
+    // Empty multi-block filter
+    fn test_contains_empty_multi() {
+        let filter = Filter::new(64*3, 4);
+        for i in 0..filter.nslots {
+            let word = i.to_string();
+            assert!(!filter.contains(&word), "word={}", word);
+        }
+    }
+    #[test]
+    // 1-elt multi-block filter
+    fn test_contains_one_multi() {
+        let mut filter = Filter::new(64*3, 4);
+        let word = "apples";
+        
+        // Manually insert 'apples'
+        let hash = filter.hash(word);
+        let quot = filter.calc_quot(hash);
+        let rem = filter.calc_rem(hash, 0);
+        let b = &mut filter.blocks[quot/64];
+        b.remainders[quot%64] = rem;
+        b.set_occupied(true, quot%64);
+        b.set_runend(true, quot%64);
+        
+        assert!(filter.contains("apples"));
+    }
+    #[test]
+    // Multi-elt multi-block filter
+    fn test_contains_multi_multi() {
+        let mut filter = Filter::new(64*3, 4);
+        let words = ["apples", "bananas", "oranges"];
+
+        // Manually insert words
+        for word in words.iter() {
+            let hash = filter.hash(word);
+            let quot = filter.calc_quot(hash);
+            let rem = filter.calc_rem(hash, 0);
+            // println!("word={}, quot={:x}, rem={:x}", word, quot, rem);
+
+            let b = &mut filter.blocks[quot/64];
+            b.remainders[quot%64] = rem;
+            b.set_occupied(true, quot%64);
+            b.set_runend(true, quot%64);
+        }
+        // Check that words are contained
+        for word in words.iter() {
+            assert!(filter.contains(word));
+        }
+    }
 }

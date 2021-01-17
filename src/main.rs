@@ -194,8 +194,11 @@ impl Filter {
             // Skip ahead to the block that offset is pointing inside
             let offset = b.offset % 64;
             block_i += b.offset / 64;
+            // Handle overflowing offset (offset runs off the edge)
+            if block_i >= self.nblocks {
+                return Overflow;
+            }
             b = &self.blocks[block_i];
-
             // Account for the runends before the offset in the current block
             rank += if offset > 0 {
                 bitrank(b.runends, offset - 1)
@@ -236,14 +239,6 @@ impl Filter {
                 Overflow => break None,
             }
         }
-        // while let Full(loc) = self.rank_select(x) {
-        //     if x <= loc {
-        //         x = loc + 1;
-        //     } else {
-        //         break;
-        //     }
-        // }
-        // Some(x)
     }
     /// Returns 1 if word is in the filter, 0 otherwise.
     fn contains(&self, word: &str) -> bool {
@@ -498,8 +493,11 @@ mod tests {
                     assert_eq!(
                         filter.first_unused_slot(i), 
                         if i == k {
-                            if i == nslots-1 && k == nslots-1 { None }
-                            else { Some(k+1) }
+                            if i == nslots-1 && k == nslots-1 { 
+                                None 
+                            } else { 
+                                Some(k+1) 
+                            }
                         } else {
                             Some(i)
                         },
@@ -507,20 +505,52 @@ mod tests {
                     );
                 }
             }
-            
-
-            
         }
         {
             // Filter with one multi-elt run from a to b
-            // 
+            // First unused for run [a,b] at slot x should be
+            // b+1 if x in [a,b], otherwise x
+            // Except when b=nslots-1, in which case result should be None
+            let nslots = 128;
+            for a in 0..nslots {
+                for b in a..nslots {
+                    // Setup filter w/ one run in [a,b]
+                    let mut filter = Filter::new(nslots, 4);
+                    filter.set_occupied(true, a);
+                    filter.set_runend(true, b);
+                    // Set offset
+                    if a == 0 {
+                        // Set first block's offset if a = 0
+                        filter.blocks[0].offset = b;
+                    }
+                    if a < 64 && b >= 64 {
+                        // Set second block's offset if a in B[0] and b in B[1]
+                        filter.blocks[1].offset = b-63;
+                    }
+                    // Test
+                    for i in 0..nslots {
+                        assert_eq!(
+                            filter.first_unused_slot(i),
+                            if i < a || b < i {
+                                Some(i)
+                            } else {
+                                if b == nslots-1 {
+                                    None
+                                } else {
+                                    Some(b+1)
+                                }
+                            },
+                            "run=[{}, {}], i={}", a, b, i,
+                        );
+                    }
+                }
+            }
         }
 
         // Filter with two non-overlapping runs
         // Filter with two overlapping runs in the same block
         // Filter with a run in one block extending to the next block 
         // Filter with two overlapping runs in different blocks (using offset)
-
     }
     #[test]
     /// Empty single-block filter 

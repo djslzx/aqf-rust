@@ -37,7 +37,7 @@ struct Filter {
 #[derive(Debug, PartialEq, Eq)]
 enum RankSelectResult {
     Empty,                      // home slot unoccupied
-    Full(usize),           // home slot occupied, last filled loc
+    Full(usize),                // home slot occupied, last filled loc
     Overflow,                   // search went off the edge
 }
 use RankSelectResult::*;
@@ -54,13 +54,13 @@ impl Block {
     fn is_occupied(&self, i: usize) -> bool {
         b64::get(self.occupieds, i)
     }
-    fn set_occupied(&mut self, to: bool, i: usize) {
+    fn set_occupied(&mut self, i: usize, to: bool) {
         self.occupieds = b64::set_to(self.occupieds, to, i);
     }
     fn is_runend(&self, i: usize) -> bool {
         b64::get(self.runends, i)
     }
-    fn set_runend(&mut self, to: bool, i: usize) {
+    fn set_runend(&mut self, i: usize, to: bool) {
         self.runends = b64::set_to(self.runends, to, i);
     }
 }
@@ -98,11 +98,14 @@ impl Filter {
     fn is_occupied(&self, x: usize) -> bool {
         self.blocks[x/64].is_occupied(x%64)
     }
-    fn set_runend(&mut self, to: bool, x: usize) {
-        self.blocks[x/64].set_runend(to, x%64);
+    fn set_runend(&mut self, x: usize, to: bool) {
+        self.blocks[x/64].set_runend(x%64, to);
     }
-    fn set_occupied(&mut self, to: bool, x: usize) {
-        self.blocks[x/64].set_occupied(to, x%64);
+    fn set_occupied(&mut self, x: usize, to: bool) {
+        self.blocks[x/64].set_occupied(x%64, to);
+    }
+    fn set_remainder(&mut self, x: usize, rem: Rem) {
+        self.blocks[x/64].remainders[x%64] = rem;
     }
     fn hash(&self, word: &str) -> u128 {
         let ref mut b = word.as_bytes();
@@ -169,9 +172,9 @@ impl Filter {
     /// Note: x indexes from 0.
     ///
     /// Return behavior:
-    /// - If y > x, returns Some(y)
-    /// - If y <= x, returns None
-    /// - If y runs off the edge, returns None 
+    /// - If y <= x, returns Empty
+    /// - If y > x, returns Full(y)
+    /// - If y runs off the edge, returns Overflow 
     fn rank_select(&self, x: usize) -> RankSelectResult {
         // Exit early if x is obviously out of range
         if x >= self.nslots {
@@ -270,6 +273,125 @@ impl Filter {
             }
         }
     }
+    /// Shift the remainders and runends in [a,b] forward by 1 into [a+1, b+1]
+    fn shift_remainders_and_runends(&mut self, a: usize, b: usize) {
+        // TODO: use bit shifts instead of repeatedly masking
+        for i in (a..=b).rev() {
+            self.set_remainder(i+1, self.remainder(i));
+            self.set_runend(i+1, self.is_runend(i));
+            self.set_runend(i, false);
+        }
+    }
+    /// Increment direct/indirect offsets with targets in [a,b]
+    /// to reflect shifting remainders/runends in [a,b]
+    fn inc_offsets(&mut self, a: usize, b: usize) {
+        assert!(a <= b && b < self.nslots,
+                "Parameters out of bounds: a={}, b={}, nslots={}",
+                a, b, self.nslots);
+        // Start block_i at the first block after b, clamping it so it doesn't go off the end,
+        // and work backwards
+        let mut block_i = cmp::min(b/64 + 1, self.nblocks - 1);
+        loop {
+            // Account for direct/indirect offsets:
+            // If direct, b[0] is occupied and target = x + offset
+            // If indirect, b[0] is unoccupied and target = x + offset - 1
+            let block_start = block_i * 64;
+            let block = &mut self.blocks[block_i];
+            let target = block_start + block.offset - if block.is_occupied(0) { 0 } else { 1 };
+            if target < a {
+                // If we've stepped back far enough, exit
+                break;
+            } else if target <= b {
+                // If a <= target <= b, increment offset
+                block.offset += 1;
+            }
+            // If we're on the first block, we can't step back further: exit 
+            if block_i == 0 {
+                break;
+            }
+            // Step back by one block
+            block_i -= 1;
+        }
+    }
+    /// Increment indirect offsets targeting loc for quot's run
+    fn inc_indirect_offsets(&mut self, quot: usize, loc: usize) {
+        assert!(loc < self.nslots && quot < self.nslots,
+                "Parameters out of bounds: quot={}, x={}",
+                quot, loc);
+        // Start block_i at the first block after b, clamping it so it doesn't go off the end
+        let mut block_i = cmp::min(loc/64 + 1, self.nblocks - 1);
+        // Walk through backwards from the first block after b
+        loop {
+            let block_start = block_i * 64;
+            let block = &mut self.blocks[block_i];
+            let target = block_start + block.offset - 1;
+            // If we've stepped back far enough, exit
+            if target < block_start {
+                break;
+            }
+            // If target == loc, b[0] isn't occupied (offset is indirect), 
+            // and quot < block_start (indirect offsets target runends 
+            // that start in earlier blocks)
+            if target == loc && !block.is_occupied(0) && quot < block_start {
+                block.offset += 1;
+            }
+            // If we're on the first block, we can't step back further: exit 
+            if block_i == 0 {
+                break;
+            }
+            // Step back by one block
+            block_i -= 1;
+        }
+    }
+
+    /// Insert (quot, rem) pair into filter
+    fn raw_insert(&mut self, quot: usize, rem: Rem) {
+        assert!(quot < self.nslots);
+        assert!(rem > 0);
+
+        // Find the appropriate runend
+        match self.rank_select(quot) {
+            Empty => {
+                self.set_occupied(quot, true);
+                self.set_runend(quot, true);
+                self.set_remainder(quot, rem);
+            }
+            Full(r) => {
+                // Find u, the first open slot after r, and
+                // shift everything in [r+1, u-1] forward by 1 into [r+2, u], 
+                // leaving r+1 writable
+                let u = match self.first_unused_slot(r) {
+                    Some(loc) => loc,
+                    None => panic!("Couldn't find an unused slot"),
+                };
+                self.shift_remainders_and_runends(u-1, r+1);
+                self.inc_offsets(r+1, u-1);
+                // Start a new run or extend an existing one
+                if !self.is_occupied(quot) {
+                    // Set occupied, add runend, add rem, shift indirect offsets
+                    self.set_occupied(quot, true);
+                    self.set_runend(r+1, true);
+                    self.set_remainder(r+1, rem);
+                    self.inc_indirect_offsets(quot, r);
+                } else {
+                    // Don't need to set occupied
+                    // Shift runend, add rem, shift offsets
+                    self.set_runend(r, false);
+                    self.set_runend(r+1, true);
+                    self.set_remainder(r+1, rem);
+                    self.inc_offsets(r, r);
+                }
+            }
+            Overflow => 
+                panic!(
+                    "Filter ran out of space (nslots={}, quot=(block={}, slot={}))",
+                    self.nslots, quot/64, quot%64,
+                ),
+        }
+    }
+
+    /// 
+    fn insert(&mut self, word: &str) {}
 }
 
 fn main() {
@@ -487,8 +609,8 @@ mod tests {
         let nslots = 128;
         for k in 0..nslots {
             let mut filter = Filter::new(nslots, 4);
-            filter.set_occupied(true, k);
-            filter.set_runend(true, k);
+            filter.set_occupied(k, true);
+            filter.set_runend(k, true);
             for i in 0..nslots {
                 assert_eq!(
                     filter.first_unused_slot(i), 
@@ -510,8 +632,8 @@ mod tests {
     /// (doesn't handle overlaps with existing state)
     fn insert_run(filter: &mut Filter, a: usize, b: usize) {
         // Setup filter
-        filter.set_occupied(true, a);
-        filter.set_runend(true, b);
+        filter.set_occupied(a, true);
+        filter.set_runend(b, true);
         // Set offset
         if a == 0 {
             // Set first block's offset if a = 0
@@ -633,8 +755,8 @@ mod tests {
         let rem = filter.calc_rem(hash, 0);
         let b = &mut filter.blocks[0];
         b.remainders[quot] = rem;
-        b.set_occupied(true, quot);
-        b.set_runend(true, quot);
+        b.set_occupied(quot, true);
+        b.set_runend(quot, true);
         
         assert!(filter.contains("apples"));
     }
@@ -654,8 +776,8 @@ mod tests {
 
             let b = &mut filter.blocks[0];
             b.remainders[quot] = rem;
-            b.set_occupied(true, quot);
-            b.set_runend(true, quot);
+            b.set_occupied(quot, true);
+            b.set_runend(quot, true);
         }
         // Check that words are contained
         for word in words.iter() {
@@ -683,8 +805,8 @@ mod tests {
         let rem = filter.calc_rem(hash, 0);
         let b = &mut filter.blocks[quot/64];
         b.remainders[quot%64] = rem;
-        b.set_occupied(true, quot%64);
-        b.set_runend(true, quot%64);
+        b.set_occupied(quot%64, true);
+        b.set_runend(quot%64, true);
         
         assert!(filter.contains("apples"));
     }
@@ -703,8 +825,8 @@ mod tests {
 
             let b = &mut filter.blocks[quot/64];
             b.remainders[quot%64] = rem;
-            b.set_occupied(true, quot%64);
-            b.set_runend(true, quot%64);
+            b.set_occupied(quot%64, true);
+            b.set_runend(quot%64, true);
         }
         // Check that words are contained
         for word in words.iter() {

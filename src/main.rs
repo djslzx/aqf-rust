@@ -471,86 +471,146 @@ mod tests {
         }
     }
     #[test]
-    fn test_first_unused_slot() {
-        {
-            // Empty filter
-            // The first unused slot for a slot x should be x itself
-            let filter = Filter::new(128, 4);
-            for i in 0..filter.nslots {
-                assert_eq!(filter.first_unused_slot(i), Some(i), "i={}", i);
+    fn test_first_unused_empty() {
+        // Empty filter
+        // The first unused slot for a slot x should be x itself
+        let filter = Filter::new(128, 4);
+        for i in 0..filter.nslots {
+            assert_eq!(filter.first_unused_slot(i), Some(i), "i={}", i);
+        }
+    }
+    #[test]
+    fn test_first_unused_single() {
+        // Filter with one element at k
+        // The first unused slot for a slot x should be 
+        // k+1 if x == k, x otherwise (except when x=k=nslots-1)
+        let nslots = 128;
+        for k in 0..nslots {
+            let mut filter = Filter::new(nslots, 4);
+            filter.set_occupied(true, k);
+            filter.set_runend(true, k);
+            for i in 0..nslots {
+                assert_eq!(
+                    filter.first_unused_slot(i), 
+                    if i == k {
+                        if i == nslots-1 && k == nslots-1 { 
+                            None 
+                        } else { 
+                            Some(k+1) 
+                        }
+                    } else {
+                        Some(i)
+                    },
+                    "k={}, i={}", k, i,
+                );
             }
         }
-        {
-            // Filter with one element at k
-            // The first unused slot for a slot x should be 
-            // k+1 if x == k, x otherwise (except when x=k=nslots-1)
-            let nslots = 128;
-            for k in 0..nslots {
+    }
+    /// Insert a single run [a,b] into a filter of 128 slots 
+    /// (doesn't handle overlaps with existing state)
+    fn insert_run(filter: &mut Filter, a: usize, b: usize) {
+        // Setup filter
+        filter.set_occupied(true, a);
+        filter.set_runend(true, b);
+        // Set offset
+        if a == 0 {
+            // Set first block's offset if a = 0
+            filter.blocks[0].offset = b;
+        }
+        if a < 64 && b >= 64 {
+            // Set second block's offset if a in B[0] and b in B[1]
+            filter.blocks[1].offset = b-63;
+        }
+    }
+    #[test]
+    fn test_first_unused_one_run() {
+        // Filter with one multi-elt run from a to b
+        // First unused for run [a,b] at slot x should be
+        // b+1 if x in [a,b], otherwise x
+        // Except when b=nslots-1, in which case result should be None
+        let nslots = 128;
+        for a in 0..nslots {
+            for b in a..nslots {
+                // Setup filter w/ one run in [a,b]
                 let mut filter = Filter::new(nslots, 4);
-                filter.set_occupied(true, k);
-                filter.set_runend(true, k);
+                insert_run(&mut filter, a, b);
+                // Test
                 for i in 0..nslots {
                     assert_eq!(
-                        filter.first_unused_slot(i), 
-                        if i == k {
-                            if i == nslots-1 && k == nslots-1 { 
-                                None 
-                            } else { 
-                                Some(k+1) 
-                            }
-                        } else {
+                        filter.first_unused_slot(i),
+                        if i < a || b < i {
                             Some(i)
+                        } else {
+                            if b == nslots-1 {
+                                None
+                            } else {
+                                Some(b+1)
+                            }
                         },
-                        "k={}, i={}", k, i,
+                        "run=[{}, {}], i={}", a, b, i,
                     );
                 }
             }
         }
-        {
-            // Filter with one multi-elt run from a to b
-            // First unused for run [a,b] at slot x should be
-            // b+1 if x in [a,b], otherwise x
-            // Except when b=nslots-1, in which case result should be None
-            let nslots = 128;
-            for a in 0..nslots {
-                for b in a..nslots {
-                    // Setup filter w/ one run in [a,b]
-                    let mut filter = Filter::new(nslots, 4);
-                    filter.set_occupied(true, a);
-                    filter.set_runend(true, b);
-                    // Set offset
-                    if a == 0 {
-                        // Set first block's offset if a = 0
-                        filter.blocks[0].offset = b;
-                    }
-                    if a < 64 && b >= 64 {
-                        // Set second block's offset if a in B[0] and b in B[1]
-                        filter.blocks[1].offset = b-63;
-                    }
-                    // Test
-                    for i in 0..nslots {
-                        assert_eq!(
-                            filter.first_unused_slot(i),
-                            if i < a || b < i {
-                                Some(i)
-                            } else {
-                                if b == nslots-1 {
-                                    None
-                                } else {
-                                    Some(b+1)
-                                }
-                            },
-                            "run=[{}, {}], i={}", a, b, i,
-                        );
-                    }
-                }
-            }
-        }
+    }
+    #[test]
+    fn test_first_unused_two_runs() {
+        // Two runs [a,b] and [c,d]
+        let nslots = 128;
 
-        // Filter with two non-overlapping runs
-        // Filter with two overlapping runs in the same block
-        // Filter with a run in one block extending to the next block 
-        // Filter with two overlapping runs in different blocks (using offset)
+        // Test first_unused_slot for runs [a,b] and [c,d] nonoverlapping
+        let test_two_runs = |a: usize, b: usize, c: usize, d: usize| {
+            let mut filter = Filter::new(nslots, 4);
+            insert_run(&mut filter, a, b);
+            insert_run(&mut filter, c, d);
+
+            for i in 0..nslots {
+                assert_eq!(
+                    filter.first_unused_slot(i),
+                    if i < a || (i > b && i < c) || i > d {
+                        // If i isn't in either interval
+                        Some(i)
+                    } else {
+                        if i >= a && i <= b {
+                            // If i is in the first interval
+                            if c > b+1 {
+                                // If there's a gap between the two intervals
+                                Some(b+1)
+                            } else if d < nslots - 1 {
+                                // If the two intervals are connected
+                                // and there's a gap after the second
+                                Some(d+1)
+                            } else {
+                                None
+                            }
+                        } else if i >= c && i <= d && d < nslots-1 {
+                            // If i is in the second interval and
+                            // there's a gap after the second interval 
+                            Some(d+1)
+                        } else {
+                            None
+                        }
+                    },
+                    "r1=[{}, {}], r2=[{}, {}], i={}, filter={:?}",
+                    a, b, c, d, i, filter,
+                );
+            }
+        };
+        // Run tests
+        test_two_runs(0, 63, 65, 127); // center gap
+        test_two_runs(0, 64, 66, 127); // center gap
+        test_two_runs(1, 63, 64, 127); // left gap
+        test_two_runs(1, 64, 65, 127); // left gap
+        test_two_runs(0, 63, 64, 126); // right gap
+        test_two_runs(0, 64, 65, 126); // right gap
+        test_two_runs(1, 63, 65, 127); // left, center gap
+        test_two_runs(1, 64, 66, 127); // left, center gap
+        test_two_runs(1, 63, 64, 126); // left, right gap
+        test_two_runs(1, 64, 65, 126); // left, right gap
+        test_two_runs(0, 63, 65, 126); // center, right gap
+        test_two_runs(0, 64, 66, 126); // center, right gap
+        test_two_runs(1, 63, 65, 126); // left, center, right gap
+        test_two_runs(1, 64, 66, 126); // left, center, right gap
     }
     #[test]
     /// Empty single-block filter 

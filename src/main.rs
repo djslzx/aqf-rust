@@ -291,9 +291,13 @@ impl Filter {
     /// Increment direct/indirect offsets with targets in [a,b]
     /// to reflect shifting remainders/runends in [a,b]
     fn inc_offsets(&mut self, a: usize, b: usize) {
-        assert!(a <= b && b < self.nslots,
+        assert!(a < self.nslots && b < self.nslots,
                 "Parameters out of bounds: a={}, b={}, nslots={}",
                 a, b, self.nslots);
+        // Exit early if invalid range
+        if a > b {
+            return;
+        }
         // Start block_i at the first block after b, clamping it so it doesn't go off the end,
         // and work backwards
         let mut block_i = cmp::min(b/64 + 1, self.nblocks - 1);
@@ -352,7 +356,7 @@ impl Filter {
     /// Insert a (quot, rem) pair into filter
     fn raw_insert(&mut self, quot: usize, rem: Rem) {
         assert!(quot < self.nslots);
-        assert!(rem > 0);
+        assert!(rem > 0);       // FIXME: not necessary?
 
         // Find the appropriate runend
         match self.rank_select(quot) {
@@ -394,9 +398,13 @@ impl Filter {
                 ),
         }
     }
-
-    /// 
-    fn insert(&mut self, word: &str) {}
+    /// Inserts a word into the filter
+    fn insert(&mut self, word: &str) {
+        let h = self.hash(word);
+        let quot = self.calc_quot(h);
+        let rem = self.calc_rem(h, 0);
+        self.raw_insert(quot, rem);
+    }
 }
 
 fn main() {
@@ -971,5 +979,97 @@ mod tests {
             assert_eq!(filter.blocks[2].offset, 66);
             assert_eq!(filter.blocks[3].offset, 2);
         }
+    }
+    // Checks if x is a power of 2
+    fn is_pow_2(x: usize) -> bool {
+        let mask = if x == 0 { 0 } else { x-1 };
+        return (x & mask) == 0;
+    }
+    #[test]
+    fn test_raw_insert_new_run() {
+        // Insert new runs that don't overlap with anything
+        let mut filter = Filter::new(128, 4);
+        // Insert new runs at powers of 2
+        for i in 1..filter.nslots {
+            if is_pow_2(i) {
+                filter.raw_insert(i, i as Rem);
+            }
+        }
+        // Check offsets
+        assert_eq!(filter.blocks[0].offset, 0); // indirect offset b/c b[0][0] empty
+        assert_eq!(filter.blocks[1].offset, 0); // direct offset b/c b[1][0] has 1-elt run
+        // Check occupieds/runends
+        for i in 1..filter.nslots {
+            assert_eq!(filter.is_occupied(i), is_pow_2(i));
+            assert_eq!(filter.is_runend(i), is_pow_2(i));
+            assert_eq!(filter.remainder(i), 
+                       if is_pow_2(i) { i } else { 0 } as Rem);
+        }
+    }
+    #[test]
+    fn test_raw_insert_overlapping_run() {
+        // Insert a new run that overlaps with an existing run
+        // and shifts multiple offsets
+
+        fn one_long_run() -> Filter {
+            // Setup: one existing run: [0:(0,130)]
+            let mut filter = Filter::new(64*3, 4);
+            let b = &mut filter.blocks;
+            b[0].set_occupied(0, true);
+            b[0].offset = 130;      // direct offset
+            b[1].offset = 130-64+1; // indirect offset
+            b[2].offset = 3;        // indirect offset
+            b[2].set_runend(2, true);
+            for i in 0..=130 {
+                filter.set_remainder(i, i as Rem);
+            }
+            filter 
+        }
+        // Insert after the run ends
+        let mut filter = one_long_run();
+        filter.raw_insert(131, 0xff);
+        for i in 0..filter.nslots {
+            assert_eq!(filter.is_occupied(i), i==0 || i==131, "i={}", i);
+            assert_eq!(filter.is_runend(i), i==130 || i==131, "i={}", i);
+            assert_eq!(filter.remainder(i), 
+                       if i < 131 { i as Rem } 
+                       else if i == 131 { 0xff }
+                       else { 0 }, 
+                       "i={}", 
+                       i);
+        }
+        // Insert into a new run with quot where 0 < quot < 130
+        let mut filter = one_long_run();
+        filter.raw_insert(10, 0xff);
+        for i in 0..filter.nslots {
+            assert_eq!(filter.is_occupied(i), i==0 || i==10, "i={}", i);
+            assert_eq!(filter.is_runend(i), i==130 || i==131, "i={}", i);
+            assert_eq!(filter.remainder(i), 
+                       if i < 131 { i as Rem }
+                       else if i == 131 { 0xff }
+                       else { 0 },
+                       "i={}", 
+                       i);
+        }
+        // Extend the run (insert with quot=0)
+        let mut filter = one_long_run();
+        filter.raw_insert(0, 131);
+        for i in 0..filter.nslots {
+            assert_eq!(filter.is_occupied(i), i==0, "i={}", i);
+            assert_eq!(filter.is_runend(i), i==131, "i={}", i);
+            assert_eq!(filter.remainder(i), 
+                       if i <= 131 { i as Rem }
+                       else { 0 }, 
+                       "i={}", 
+                       i);
+        }
+    }
+    #[test]
+    fn test_raw_insert_out_of_space() {
+        // Run out of space
+    }
+    #[test]
+    fn integration_test() {
+        // Insert and query elts, ensure that there are no false negatives
     }
 }

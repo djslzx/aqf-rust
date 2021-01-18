@@ -90,21 +90,27 @@ impl Filter {
         }        
     }
     fn remainder(&self, x: usize) -> Rem {
+        assert!(x < self.nslots, "x={}", x);
         self.blocks[x/64].remainders[x%64]
     }
     fn is_runend(&self, x: usize) -> bool {
+        assert!(x < self.nslots, "x={}", x);
         self.blocks[x/64].is_runend(x%64)
     }
     fn is_occupied(&self, x: usize) -> bool {
+        assert!(x < self.nslots, "x={}", x);
         self.blocks[x/64].is_occupied(x%64)
     }
     fn set_runend(&mut self, x: usize, to: bool) {
+        assert!(x < self.nslots, "x={}", x);
         self.blocks[x/64].set_runend(x%64, to);
     }
     fn set_occupied(&mut self, x: usize, to: bool) {
+        assert!(x < self.nslots, "x={}", x);
         self.blocks[x/64].set_occupied(x%64, to);
     }
     fn set_remainder(&mut self, x: usize, rem: Rem) {
+        assert!(x < self.nslots, "x={}", x);
         self.blocks[x/64].remainders[x%64] = rem;
     }
     fn hash(&self, word: &str) -> u128 {
@@ -343,8 +349,7 @@ impl Filter {
             block_i -= 1;
         }
     }
-
-    /// Insert (quot, rem) pair into filter
+    /// Insert a (quot, rem) pair into filter
     fn raw_insert(&mut self, quot: usize, rem: Rem) {
         assert!(quot < self.nslots);
         assert!(rem > 0);
@@ -364,7 +369,7 @@ impl Filter {
                     Some(loc) => loc,
                     None => panic!("Couldn't find an unused slot"),
                 };
-                self.shift_remainders_and_runends(u-1, r+1);
+                self.shift_remainders_and_runends(r+1, u-1);
                 self.inc_offsets(r+1, u-1);
                 // Start a new run or extend an existing one
                 if !self.is_occupied(quot) {
@@ -831,6 +836,140 @@ mod tests {
         // Check that words are contained
         for word in words.iter() {
             assert!(filter.contains(word));
+        }
+    }
+    #[test]
+    fn test_shift_rem_and_runends() {
+        let mut filter = Filter::new(128, 4);
+        for i in 0..filter.nslots {
+            filter.set_remainder(i, i as Rem);
+            filter.set_runend(i, i % 3 == 0);
+        }
+        // Shift [0, nslots-2] to [1, nslots-1] and clear [0]
+        filter.shift_remainders_and_runends(0, filter.nslots-2);
+        assert_eq!(filter.remainder(0), 0);
+        assert_eq!(filter.is_runend(0), false);
+        for i in 1..filter.nslots {
+            let j = (i as Rem) - 1;
+            assert_eq!(filter.remainder(i), j);
+            assert_eq!(filter.is_runend(i), j % 3 == 0);
+        }
+    }
+    fn offset_state_init() -> Filter {
+        let mut filter = Filter::new(64*4, 4);
+        let b = &mut filter.blocks;
+        // Run in b0: [0:(0,1)]
+        b[0].set_occupied(0, true);
+        b[0].set_runend(1, true);
+        b[0].offset = 1;          // direct offset
+        // Run in b0,b1: [63:(63,65)]
+        b[0].set_occupied(63, true);
+        b[1].set_runend(1, true);
+        b[1].set_occupied(0, false);
+        b[1].offset = 2;          // indirect offset
+        // Run in b1: [67: (67,72)]
+        b[1].set_occupied(3, true);
+        b[1].set_runend(8, true);
+        // Run in b1: [68: (73,73)]
+        b[1].set_occupied(4, true);
+        b[1].set_runend(9, true);
+        // Run from b1 to b3: [94: (192)]
+        b[1].set_occupied(30, true);
+        b[2].offset = 65;     // dist from 128 to 192+1 (indirect)
+        b[3].set_runend(0, true);
+        b[3].offset = 1;      // dist from 192 to 192+1 (indirect)
+
+        filter
+    }
+    #[test]
+    fn test_inc_offsets() {
+        // Inc all offsets [0, n-2] -> [1, n-1]
+        {
+            let mut filter = offset_state_init();
+            filter.inc_offsets(0, filter.nslots-2);
+            let b = filter.blocks;
+            assert_eq!(b[0].offset, 2);
+            assert_eq!(b[1].offset, 3);
+            assert_eq!(b[2].offset, 66);
+            assert_eq!(b[3].offset, 2);
+        }
+        // Inc ranges that nothing is pointing to
+        {
+            let mut filter = offset_state_init();
+            let ranges = [(2,64), (66, 191), (193, 255)];
+            for (start,end) in ranges.iter() {
+                filter.inc_offsets(*start, *end);
+                let b = &filter.blocks;
+                // Check that for each inc_offsets call,
+                // none of the offsets are changed
+                assert_eq!(b[0].offset, 1);
+                assert_eq!(b[1].offset, 2);
+                assert_eq!(b[2].offset, 65);
+                assert_eq!(b[3].offset, 1);
+            }
+        }
+        // Inc the elts that things are pointing to
+        {
+            let mut filter = offset_state_init();
+            filter.inc_offsets(1,1);
+            assert_eq!(filter.blocks[0].offset, 2);
+            assert_eq!(filter.blocks[1].offset, 2);
+            assert_eq!(filter.blocks[2].offset, 65);
+            assert_eq!(filter.blocks[3].offset, 1);
+            filter.inc_offsets(65,65);
+            assert_eq!(filter.blocks[0].offset, 2);
+            assert_eq!(filter.blocks[1].offset, 3);
+            assert_eq!(filter.blocks[2].offset, 65);
+            assert_eq!(filter.blocks[3].offset, 1);
+            filter.inc_offsets(192,192);
+            assert_eq!(filter.blocks[0].offset, 2);
+            assert_eq!(filter.blocks[1].offset, 3);
+            assert_eq!(filter.blocks[2].offset, 66);
+            assert_eq!(filter.blocks[3].offset, 2);
+        }
+    }
+    #[test]
+    fn test_inc_indirect_offsets() {
+        // Inc direct targets does nothing
+        {
+            let mut filter = offset_state_init();
+            filter.inc_indirect_offsets(0, 1);
+            assert_eq!(filter.blocks[0].offset, 1);
+            assert_eq!(filter.blocks[1].offset, 2);
+            assert_eq!(filter.blocks[2].offset, 65);
+            assert_eq!(filter.blocks[3].offset, 1);
+        }
+        // Inc indirect offsets but large quot does nothing
+        {
+            let mut filter = offset_state_init();
+            filter.inc_indirect_offsets(66, 65);
+            filter.inc_indirect_offsets(193, 192);
+            assert_eq!(filter.blocks[0].offset, 1);
+            assert_eq!(filter.blocks[1].offset, 2);
+            assert_eq!(filter.blocks[2].offset, 65);
+            assert_eq!(filter.blocks[3].offset, 1);
+        }
+        // Range with only indirect offsets does inc
+        {
+            let mut filter = offset_state_init();
+            filter.inc_indirect_offsets(0, 65);
+            filter.inc_indirect_offsets(0, 192);
+            assert_eq!(filter.blocks[0].offset, 1);
+            assert_eq!(filter.blocks[1].offset, 3);
+            assert_eq!(filter.blocks[2].offset, 66);
+            assert_eq!(filter.blocks[3].offset, 2);
+        }
+        // Range with both indirect/direct offsets
+        // only increments indirect offsets
+        {
+            let mut filter = offset_state_init();
+            for i in (0..filter.nslots).rev() {
+                filter.inc_indirect_offsets(0, i);
+            }
+            assert_eq!(filter.blocks[0].offset, 1);
+            assert_eq!(filter.blocks[1].offset, 3);
+            assert_eq!(filter.blocks[2].offset, 66);
+            assert_eq!(filter.blocks[3].offset, 2);
         }
     }
 }

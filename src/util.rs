@@ -2,6 +2,20 @@
 
 use std::num::Wrapping;
 
+/// Hashmap macro
+#[macro_export]
+macro_rules! hashmap(
+    { $($key:expr => $value:expr),+ } => {
+        {
+            let mut m = ::std::collections::HashMap::new();
+            $(
+                m.insert($key, $value);
+            )+
+            m
+        }
+     };
+);
+
 // Bit arrays
 pub mod bitarr {
     // 64-bit bit arrays

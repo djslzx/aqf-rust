@@ -2,7 +2,11 @@
 #![allow(dead_code)]
 
 use murmur3;
-use std::cmp;
+use rand::{
+    Rng, SeedableRng,
+};
+use rand::rngs::SmallRng;
+use std::{cmp, collections::HashSet,};
 mod util;
 use util::{
     bitarr::{b128, b64},
@@ -1078,24 +1082,27 @@ mod tests {
     #[test]
     fn test_insert_and_query() {
         // Insert and query elts, ensure that there are no false negatives
-        let size = 10_000;
-        let mut filter = Filter::new(size, 4);
-        // Insert all multiples of 10
-        for i in 0..size/10 {
-            let s = &(i*10).to_string();
-            filter.insert(s);
+        let a: usize = 1 << 14;
+        let n: usize = a/10;           // use A/S = 10
+        let mut filter = Filter::new(n, 4);
+        // Generate query set
+        let mut rng = SmallRng::seed_from_u64(0);
+        let mut set = HashSet::new();
+        for _ in 0..n {
+            let elt = (rng.gen::<usize>() % a).to_string();
+            set.insert(elt.clone());
+            filter.insert(&elt.clone());
         }
-        // Query [0, 10_000] and ensure that all multiples of 10 
-        // return true
+        // Query [0, n] and ensure that all items in the set return true
         let mut fps = 0;
-        for i in 0..size {
-            let s = &i.to_string();
-            if i%10 == 0 {
-                assert!(filter.contains(s), "s={}", s);
+        for i in 0..n {
+            let elt = &i.to_string();
+            if set.contains(elt) {
+                assert!(filter.contains(elt), "elt={}", elt);
             } else {
-                fps += filter.contains(s) as u32;
+                fps += filter.contains(elt) as usize;
             }
         }
-        println!("FP rate: {}", fps/10_000);
+        println!("FP rate: {}", fps/n);
     }
 }

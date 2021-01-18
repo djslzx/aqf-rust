@@ -8,3 +8,4 @@ edition = "2018"
 
 [dependencies]
 murmur3 = "0.5.1"
+rand = { version = "0.8.2", features = ["small_rng"]}

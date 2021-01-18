@@ -1065,11 +1065,37 @@ mod tests {
         }
     }
     #[test]
+    #[should_panic(expected = "Couldn't find an unused slot")]
     fn test_raw_insert_out_of_space() {
-        // Run out of space
+        let mut filter = Filter::new(128, 4);
+        for i in 0..filter.nslots {
+            filter.set_occupied(i, true);
+            filter.set_runend(i, true);
+            filter.set_remainder(i, 1);
+        }
+        filter.raw_insert(0, 1);
     }
     #[test]
-    fn integration_test() {
+    fn test_insert_and_query() {
         // Insert and query elts, ensure that there are no false negatives
+        let size = 10_000;
+        let mut filter = Filter::new(size, 4);
+        // Insert all multiples of 10
+        for i in 0..size/10 {
+            let s = &(i*10).to_string();
+            filter.insert(s);
+        }
+        // Query [0, 10_000] and ensure that all multiples of 10 
+        // return true
+        let mut fps = 0;
+        for i in 0..size {
+            let s = &i.to_string();
+            if i%10 == 0 {
+                assert!(filter.contains(s), "s={}", s);
+            } else {
+                fps += filter.contains(s) as u32;
+            }
+        }
+        println!("FP rate: {}", fps/10_000);
     }
 }

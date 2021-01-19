@@ -75,8 +75,9 @@ impl Filter {
         Self::new_seeded(n, r, 0)
     }
     fn new_seeded(n: usize, r: usize, seed: u32) -> Filter {
-        let nslots = cmp::max(64, util::nearest_pow_of_2(n));
-        let nblocks = nslots / 64;
+        // add extra blocks for overflow
+        let nblocks = cmp::max(1, util::nearest_pow_of_2(n)/64); 
+        let nslots = nblocks * 64;
         let q = (nslots as f64).log2() as usize;
         let mut blocks = Vec::with_capacity(nblocks);
         for _ in 0..nblocks {
@@ -116,6 +117,12 @@ impl Filter {
     fn set_remainder(&mut self, x: usize, rem: Rem) {
         assert!(x < self.nslots, "x={}", x);
         self.blocks[x/64].remainders[x%64] = rem;
+    }
+    fn add_block(&mut self) {
+        let b = Block::new();
+        self.blocks.push(b);
+        self.nslots += 64;
+        self.nblocks += 1;
     }
     fn hash(&self, word: &str) -> u128 {
         let ref mut b = word.as_bytes();
@@ -162,7 +169,7 @@ impl Filter {
         // to count seen runends and advance to the correct block
         loop {
             b = &self.blocks[loc / 64];
-            step = bitselect(b.runends, rank) as usize;
+            step = bitselect(b.runends, if rank >= 64 { 63 } else { rank }) as usize;
             loc += step;
             if step != 64 || loc >= self.nslots {
                 break;
@@ -380,7 +387,12 @@ impl Filter {
                 // leaving r+1 writable
                 let u = match self.first_unused_slot(r) {
                     Some(loc) => loc,
-                    None => panic!("Couldn't find an unused slot"),
+                    None => {
+                        // Extend the filter by one block
+                        // and return the first empty index
+                        self.add_block();
+                        self.nslots - 64
+                    }
                 };
                 self.shift_remainders_and_runends(r+1, u-1);
                 self.inc_offsets(r+1, u-1);
@@ -414,6 +426,17 @@ impl Filter {
         let rem = self.calc_rem(h, 0);
         self.raw_insert(quot, rem);
     }
+    /// Computes filter load factor
+    fn load(&self) -> f64 {
+        // TODO: fix this so it doesn't rely on remainders being nonzero
+        let mut count = 0;
+        for b in self.blocks.iter() {
+            for rem in b.remainders.iter() {
+                count += (*rem != 0) as i32;
+            }
+        }
+        (count as f64)/(self.nslots as f64)
+    }
 }
 
 fn main() {
@@ -438,10 +461,12 @@ mod tests {
     #[test]
     fn test_calc_quot_rem() {
         let filter = Filter::new(64, 4);
-        println!("r={}, q={}", filter.r, filter.q); // r=4, q=6
+        println!("r={}, q={}", filter.r, filter.q);
+        let r = 4; 
+        let q = 6;
         let hash = 0x1234_ABCD_0000_0000__0000_0000_0000_0000_u128;
         for i in 0..(128-6)/4 {
-            let rem = if_0_inc(mask_rem(hash, 6 + 4*i, 10 + 4*i));
+            let rem = if_0_inc(mask_rem(hash, q + r*i, q+r*(i+1)));
             assert_eq!(filter.calc_rem(hash, i), rem);
         }
         // First remainder is 0, bumped up to 1 to satisfy nonzero rem invariant
@@ -1108,30 +1133,41 @@ mod tests {
         }
     }
     #[test]
-    #[should_panic(expected = "Couldn't find an unused slot")]
-    fn test_raw_insert_out_of_space() {
+    fn test_raw_insert_extend() {
         let mut filter = Filter::new(128, 4);
         for i in 0..filter.nslots {
             filter.set_occupied(i, true);
             filter.set_runend(i, true);
-            filter.set_remainder(i, 1);
+            filter.set_remainder(i, i as Rem);
         }
-        filter.raw_insert(0, 1);
+        filter.raw_insert(0, 0xff);
+        for i in 0..filter.nslots {
+            assert_eq!(filter.is_occupied(i), i < 128, "i={}", i);
+            assert_eq!(filter.is_runend(i), i > 0 && i <= 128, "i={}", i);
+            assert_eq!(filter.remainder(i), 
+                       if i==0 { 0 }
+                       else if i==1 { 0xff } 
+                       else if i <= 128 { (i-1) as Rem }
+                       else { 0 },
+                       "i={}", 
+                       i);
+        }
     }
     #[test]
     fn test_insert_and_query() {
         // Insert and query elts, ensure that there are no false negatives
         let a: usize = 1 << 14;                // use set size 2^14
-        let n: usize = a/10;                   // use A/S = 10
-        let mut filter = Filter::new(n+1, 4); // add some overflow space at the end
+        let n: usize = ((a as f64)/2_f64 * 0.95) as usize; // use A/S = 2
+        let mut filter = Filter::new(n, 4); // add some overflow space at the end
         // Generate query set
         let mut rng = SmallRng::seed_from_u64(0);
-        let mut set = HashSet::new();
-        for _ in 0..n {
+        let mut set = HashSet::with_capacity(n);
+        for _i in 0..n {
             let elt = (rng.gen::<usize>() % a).to_string();
             set.insert(elt.clone());
             filter.insert(&elt.clone());
         }
+        println!("set size: {}, n={}, a={}", set.len(), n, a);
         // Query [0, n] and ensure that all items in the set return true
         let mut fps = 0;
         for i in 0..n {
@@ -1142,6 +1178,6 @@ mod tests {
                 fps += filter.contains(elt) as usize;
             }
         }
-        println!("FP rate: {}", fps/n);
+        println!("FP rate: {}, load={}", fps/n, filter.load());
     }
 }

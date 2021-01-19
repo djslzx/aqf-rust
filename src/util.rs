@@ -308,6 +308,7 @@ fn _select64(x: u64, k: u64) -> u64 {
 //     : [bit] "g" (val)           // g: any registers except those that aren't general registers
 //     : "cc");
 pub fn bitselect(val: u64, rank: u64) -> u64 {
+    assert!(rank < 64, "rank={}", rank);
     if is_x86_feature_detected!("sse4.2") {
         let mut i = 1_u64 << rank; // 2^rank
         unsafe {

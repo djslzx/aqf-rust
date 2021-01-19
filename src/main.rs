@@ -461,9 +461,7 @@ mod tests {
     #[test]
     fn test_calc_quot_rem() {
         let filter = Filter::new(64, 4);
-        println!("r={}, q={}", filter.r, filter.q);
-        let r = 4; 
-        let q = 6;
+        let (r, q) = (4, 6); 
         let hash = 0x1234_ABCD_0000_0000__0000_0000_0000_0000_u128;
         for i in 0..(128-6)/4 {
             let rem = if_0_inc(mask_rem(hash, q + r*i, q+r*(i+1)));
@@ -1156,21 +1154,24 @@ mod tests {
     #[test]
     fn test_insert_and_query() {
         // Insert and query elts, ensure that there are no false negatives
-        let a: usize = 1 << 14;                // use set size 2^14
-        let n: usize = ((a as f64)/2_f64 * 0.95) as usize; // use A/S = 2
-        let mut filter = Filter::new(n, 4); // add some overflow space at the end
+        let a: usize = 1 << 14; // use set size 2^14
+        let ratio = 100.0;      // a/s
+        let s = util::nearest_pow_of_2((a as f64/ratio) as usize);
+        let s = ((s as f64) * 0.95) as usize;
+        let mut filter = Filter::new(s, 4);
         // Generate query set
         let mut rng = SmallRng::seed_from_u64(0);
-        let mut set = HashSet::with_capacity(n);
-        for _i in 0..n {
+        let mut set = HashSet::with_capacity(s);
+        for _i in 0..s {
             let elt = (rng.gen::<usize>() % a).to_string();
             set.insert(elt.clone());
             filter.insert(&elt.clone());
         }
-        println!("set size: {}, n={}, a={}", set.len(), n, a);
-        // Query [0, n] and ensure that all items in the set return true
+        println!("|set|: {}, s={}, a={}, load={}", 
+                 set.len(), s, a, filter.load());
+        // Query [0, a] and ensure that all items in the set return true
         let mut fps = 0;
-        for i in 0..n {
+        for i in 0..a {
             let elt = &i.to_string();
             if set.contains(elt) {
                 assert!(filter.contains(elt), "elt={}", elt);
@@ -1178,6 +1179,6 @@ mod tests {
                 fps += filter.contains(elt) as usize;
             }
         }
-        println!("FP rate: {}, load={}", fps/n, filter.load());
+        println!("FP rate: {}", (fps as f64)/(a as f64));
     }
 }

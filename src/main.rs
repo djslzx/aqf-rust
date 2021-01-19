@@ -311,6 +311,10 @@ impl Filter {
             // If indirect, b[0] is unoccupied and target = x + offset - 1
             let block_start = block_i * 64;
             let block = &mut self.blocks[block_i];
+            // If block_i == 0, then the offset must be direct, as there's no valid indirect target
+            if block_i == 0 && !block.is_occupied(0) {
+                break;
+            }
             let target = block_start + block.offset - if block.is_occupied(0) { 0 } else { 1 };
             if target < a {
                 // If we've stepped back far enough, exit
@@ -336,11 +340,12 @@ impl Filter {
         let mut block_i = cmp::min(loc/64 + 1, self.nblocks - 1);
         // Walk through backwards from the first block after b
         loop {
+            if block_i == 0 { break; }
             let block_start = block_i * 64;
             let block = &mut self.blocks[block_i];
             let target = block_start + block.offset - 1;
             // If we've stepped back far enough, exit
-            if target < block_start {
+            if target < loc {
                 break;
             }
             // If target == loc, b[0] isn't occupied (offset is indirect), 
@@ -941,6 +946,23 @@ mod tests {
         }
     }
     #[test]
+    fn test_inc_offset_negative_target() {
+        // Check that target doesn't go negative (block_i == 0 and b[0][0] unoccupied)
+        let mut filter = Filter::new(64, 4); // target is indirect
+        filter.inc_offsets(0,0);
+        assert_eq!(filter.blocks[0].offset, 0);
+        filter.blocks[0].set_occupied(0, true); // target is now direct
+        filter.inc_offsets(0,0);                // should bump up offset to 1
+        assert_eq!(filter.blocks[0].offset, 1);
+        filter.inc_offsets(1,1);                // should bump up offset to 2
+        assert_eq!(filter.blocks[0].offset, 2);
+
+        // Check for multi-block case
+        let mut filter = Filter::new(64*5, 4);
+        filter.inc_offsets(0, filter.nslots-1);
+        assert_eq!(filter.blocks[0].offset, 0);
+    }
+    #[test]
     fn test_inc_indirect_offsets() {
         // Inc direct targets does nothing
         {
@@ -983,6 +1005,23 @@ mod tests {
             assert_eq!(filter.blocks[2].offset, 66);
             assert_eq!(filter.blocks[3].offset, 2);
         }
+    }
+    #[test]
+    fn test_inc_indirect_offset_negative_target() {
+        // Shouldn't ever affect first block b/c first block 
+        // can't have an indirect target
+        let mut filter = Filter::new(64, 4);
+        filter.inc_offsets(0, 0);
+        assert_eq!(filter.blocks[0].offset, 0);
+
+        // Check for case where indirect offset
+        // points to run in previous block at slot 63
+        // This also tests our check for block_i == 0 in the loop
+        let mut filter = Filter::new(128, 4);
+        filter.blocks[0].set_occupied(63, true);
+        filter.blocks[0].set_runend(63, true);
+        filter.inc_indirect_offsets(0, 63);
+        assert_eq!(filter.blocks[1].offset, 1);
     }
     // Checks if x is a power of 2
     fn is_pow_2(x: usize) -> bool {
@@ -1082,9 +1121,9 @@ mod tests {
     #[test]
     fn test_insert_and_query() {
         // Insert and query elts, ensure that there are no false negatives
-        let a: usize = 1 << 14;
-        let n: usize = a/10;           // use A/S = 10
-        let mut filter = Filter::new(n, 4);
+        let a: usize = 1 << 14;                // use set size 2^14
+        let n: usize = a/10;                   // use A/S = 10
+        let mut filter = Filter::new(n+1, 4); // add some overflow space at the end
         // Generate query set
         let mut rng = SmallRng::seed_from_u64(0);
         let mut set = HashSet::new();

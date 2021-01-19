@@ -34,8 +34,7 @@ The logic is very close to that of the C implementation, with a few notable diff
 - Casts between integer types are made explicit. 
   Some boolean to integer casts are implemented using conditional expressions instead of
   implicit casts.
-- Integer overflows are fixed. Whereas they are allowed in C because they turn out to be
-  (hopefully) harmless, in Rust these overflows cause compiler errors.  So the Rust AQF
-  prevents these overflows from happening with additional checks. 
-  This was especially important for shifting direct/indirect offsets.
+- Integer overflows are fixed. Whereas C allows them, Rust does not -- these overflows cause compiler errors.  
+  So the Rust AQF prevents these overflows from happening with additional checks. 
+  This is especially important for incrementing direct/indirect offsets.
 - Functions are more rigorously tested. See the `tests` module for details.

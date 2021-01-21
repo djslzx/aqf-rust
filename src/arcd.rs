@@ -12,12 +12,19 @@ enum AdaptBits {
     Some {bits: u64, len: usize},
 }
 
+/// Computes floor(log2(x)) by counting the number of leading 0s
+/// to get the position of the first leading 1
+fn floor_log(x: u64) -> u32 {
+    // TODO: check that this uses a machine instruction
+    if x == 0 { 0 }
+    else { 63 - x.leading_zeros() }
+}
+
 /// Converts a letter to adapt bits
 ///   len = floor(log2(letter + 1))
 ///   bits = letter - (2^len - 1)
 fn to_bits(letter: u64) -> Option<(u64, usize)> {
-    let l = letter as f32;
-    let len = (l+1.0).log2().floor() as usize;
+    let len = floor_log( letter+1) as usize;
     if len == 0 {
         None
     } else {
@@ -59,6 +66,15 @@ fn mult_pr(x: u64, k: usize) -> u64 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn test_floor_log() {
+        for i in 0..10_000 {
+            assert_eq!(floor_log(i),
+                       (i as f64).log2().floor() as u32,
+                       "i={}",
+                       i);
+        }
+    }
     #[test]
     fn test_factorial() {
         let mut x = 1;

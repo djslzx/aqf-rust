@@ -4,7 +4,7 @@ An implementation of the Adaptive Quotient Filter (AQF) in Rust.
 &copy; David J. Lee, 2021.
 
 ## TODO
-- [ ] Add remote representation
+- [x] Add remote representation
   - [ ] Test remote rep
 - [ ] Implement arithmetic coding (old?)
   - [ ] Test arithmetic coding (check and reuse old tests)

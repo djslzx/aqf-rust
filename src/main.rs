@@ -7,6 +7,7 @@ use rand::{
 };
 use rand::rngs::SmallRng;
 use std::{cmp, collections::{HashSet, HashMap}};
+mod arcd;
 mod util;
 use util::{
     bitarr::{b128, b64},
@@ -399,7 +400,7 @@ mod aqf {
                 }
                 Overflow => 
                     panic!(
-                        "AQF ran out of space (nslots={}, quot=(block={}, slot={}))",
+                        "AQF failed to find runend (nslots={}, quot=(block={}, slot={}))",
                         self.nslots, quot/64, quot%64,
                     ),
             }
@@ -453,9 +454,11 @@ mod aqf {
             self.raw_insert(quot, rem);
             self.remote.insert((quot,rem), (elt, hash));
         }
+    }
+    #[cfg(test)]
+    mod tests {
 
     }
-
 }
 
 /// Rank-and-Select Quotient Filter
@@ -828,7 +831,7 @@ mod rsqf {
                 }
                 Overflow => 
                     panic!(
-                        "RSQF ran out of space (nslots={}, quot=(block={}, slot={}))",
+                        "RSQF failed to find runend (nslots={}, quot=(block={}, slot={}))",
                         self.nslots, quot/64, quot%64,
                     ),
             }

@@ -4,14 +4,19 @@ An implementation of the Adaptive Quotient Filter (AQF) in Rust.
 &copy; David J. Lee, 2021.
 
 ## TODO
-- [x] Add remote representation
-  - [ ] Test remote rep
-- [ ] Implement arithmetic coding (old?)
-  - [ ] Test arithmetic coding (check and reuse old tests)
-- [ ] Add integration tests (adversary, file-based, etc.)
-- [ ] Implement adaptivity bit extensions
-  - [ ] Test
-- [ ] Use macros for accessing/editing remainders?
+- Remote representation
+  - [x] Add remote representation
+  - [ ] Test remote rep (can't do yet until we start adapting)
+- Arithmetic coding and fingerprint extensions
+  - [x] Transcribe old arithmetic coding
+    - [ ] Test
+  - [x] Write functions translating between fingerprint extension bits and the letters used in the arithmetic code
+    - [x] Test 
+  - [ ] Write new arithmetic coding (optimized for new probability distribution)
+  - [ ] Integrate changes into `aqf` module
+    - [ ] Adapt on lookups
+- Testing
+  - [ ] Add integration tests (adversary, file-based, etc.)
 
 ## Implementation notes
 The logic is very close to that of the C implementation, with a few notable differences:
@@ -28,9 +33,9 @@ The logic is very close to that of the C implementation, with a few notable diff
   which consists of three cases (`Empty`, `Full(loc)`, and `Overflow`).
   This allows the function to more clearly signal its result:
   - `Empty` indicates that the result of `select(Q.runends, rank(Q.occupieds, x))`
-    is an empty slot; i.e., the home slot for the quotient `x` is open.
+    precedes `x`; i.e., the home slot for the quotient `x` is open.
   - `Full(loc)` indicates that the home slot for `x` is taken, and `loc`
-    indicates the last slot that is taken by a run for a quotient smaller than `x`.
+    is the last slot that is taken by a run for a quotient smaller than `x`.
   - `Overflow` indicates that the search passed the last block in the filter.
 - Elsewhere in the code, we replace haphazard flag values and returns by reference
   with proper return values, sometimes using `Option`s.
@@ -39,9 +44,7 @@ The logic is very close to that of the C implementation, with a few notable diff
 - Loop logic is modified somewhat; Rust lacks `do-while` loops, so we make do with
   infinite loops that break when a condition is met.
 - Casts between integer types are made explicit. 
-  Some boolean to integer casts are implemented using conditional expressions instead of
-  implicit casts.
-- Integer overflows are fixed. Whereas C allows them, Rust does not -- these overflows cause compiler errors.  
-  So the Rust AQF prevents these overflows from happening with additional checks. 
+- Boolean to integer casts are implemented using conditional expressions or explicit casts instead of implicit casts.
+- Integer overflows are fixed. Whereas C allows them, Rust does not -- these overflows cause compiler errors. So the Rust AQF prevents these overflows from happening with additional checks. 
   This is especially important for incrementing direct/indirect offsets.
 - Functions are more rigorously tested. See the `tests` module for details.

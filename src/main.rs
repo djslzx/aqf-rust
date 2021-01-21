@@ -31,7 +31,7 @@ mod aqf {
         remainders: [Rem; 64],
         occupieds: u64,
         runends: u64,
-        selectors: u64,
+        extensions: u64,
         offset: usize,
     }
 
@@ -67,7 +67,7 @@ mod aqf {
                 remainders: [0; 64],
                 occupieds: 0,
                 runends: 0,
-                selectors: 0,
+                extensions: 0,
                 offset: 0,
             }
         }

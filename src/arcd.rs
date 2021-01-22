@@ -5,8 +5,9 @@
 
 const CODE_LEN: usize = 56;     // length of arithmetic code
 const LG_ADAPTS: usize = 2;     // lg(adapt_rate)
-const LG_EPS: usize = 4;        // lg(eps)
+const LG_EPS: usize = 4;        // -lg(eps)
 
+#[derive(Debug)]
 enum AdaptBits {
     None,
     Some {bits: u64, len: usize},
@@ -15,38 +16,39 @@ enum AdaptBits {
 /// Computes floor(log2(x)) by counting the number of leading 0s
 /// to get the position of the first leading 1
 fn floor_log(x: u64) -> u32 {
-    // TODO: check that this uses a machine instruction
-    if x == 0 { 0 }
+    if x == 0 { 0 } // treat log(0) as 0
     else { 63 - x.leading_zeros() }
+    // this uses a compiler intrinsic, which i'm assuming is fast
 }
 
 /// Converts a letter to adapt bits
 ///   len = floor(log2(letter + 1))
 ///   bits = letter - (2^len - 1)
-fn to_bits(letter: u64) -> Option<(u64, usize)> {
-    let len = floor_log( letter+1) as usize;
+fn to_bits(letter: u64) -> AdaptBits {
+    let len = floor_log(letter+1) as usize;
     if len == 0 {
-        None
+        AdaptBits::None
     } else {
-        let bits = letter - ((1 << len) - 1);
-        Some((bits, len as usize))
+        AdaptBits::Some {
+            bits: letter - ((1 << len) - 1),
+            len: len as usize
+        }
     }
 }
 
 /// Converts adaptivity bits to a letter
 ///   letter = 0                   if len=0
 ///          = (2^len - 1) + bits  if len>0
-fn to_letter(bits: Option<(u64, usize)>) -> u64 {
-    match bits {
-        None => 0,
-        Some((bits, len)) => {
+fn to_letter(bits: &AdaptBits) -> u64 {
+    match *bits {
+        AdaptBits::None => 0,
+        AdaptBits::Some {bits, len} => {
             assert_ne!(len, 0, "Length-less adaptivity bits should be None");
             ((1 << len)-1) as u64 + bits
         }
     }
 }
 
-// FIXME: make this faster
 fn slow_factorial(x: u64) -> u64 {
     let mut out = 1;
     for i in 2..=x {
@@ -56,6 +58,7 @@ fn slow_factorial(x: u64) -> u64 {
 }
 /// Multiply x by Pr[k]
 /// Pr[k] = 1/(2^k * k!e)
+// FIXME: probability function is incorrect
 fn mult_pr(x: u64, k: usize) -> u64 {
     let k_factorial = slow_factorial(k as u64) as f64;
     (((x >> k) >> LG_EPS) as f64/k_factorial) as u64
@@ -87,12 +90,13 @@ mod tests {
     fn test_conversions() {
         for i in 0..1000 {
             let bits = to_bits(i);
-            let letter = to_letter(bits);
+            let letter = to_letter(&bits);
             assert_eq!(i, letter,
                        "l={} -> bits={:?} -> l={}",
                        i, bits, letter);
         }
     }
+    //FIXME: probability function is incorrect
     #[test]
     fn test_mult_pr() {
         fn slow_mult_pr(x: u64, k: usize) -> u64 {
@@ -288,8 +292,8 @@ mod old_arcd {
             // Check for each x in int_inputs that x = decode(encode(x))
             for input in int_inputs {
                 match encode(input) {
-                    Some(x) => {
-                        let code = x;
+                    // Encoding succeeds
+                    Some(code) => {
                         let decoded = decode(code);
                         assert_eq!(
                             input, decoded,
@@ -297,24 +301,16 @@ mod old_arcd {
                             input, code, decoded,
                         );
                     },
+                    // Encoding fails (out of bits)
                     None => {
-                        match range_size(input) {
-                            // Failed to encode but sequence encoding shouldn't
-                            // overflow => error
-                            Ok(size) =>
-                                if size > max(1, (64-CODE_LEN) as u64) {
-                                    assert!(
-                                        false,
-                                        "Ran out of bits! (input={:?}, size={})",
-                                        input, size
-                                    )
-                                }
-                            // Failed to encode because sequence encoding is too long
-                            // => success
-                            Err(i) => println!(
-                                "Ran out of bits (i={}) as expected (bits={})",
-                                i, CODE_LEN,
-                            ),
+                        // Failed to encode but sequence encoding shouldn't overflow
+                        // => error
+                        if let Ok(size) = range_size(input) {
+                            assert!(
+                                size <= max(1, (64-CODE_LEN) as u64),
+                                "Ran out of bits! (input={:?}, range_size={})",
+                                input, size
+                            );
                         }
                     }
                 }

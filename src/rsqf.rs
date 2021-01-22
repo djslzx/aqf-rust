@@ -1,7 +1,19 @@
-use super::*;
+use murmur3;
+use rand::{
+    Rng, SeedableRng, rngs::SmallRng,
+};
+use std::{cmp, collections::HashSet};
+use crate::{
+    Filter, Rem,
+};
+use crate::util::{
+    bitarr::{b128, b64},
+    bitrank, bitselect, popcnt,
+    nearest_pow_of_2
+};
 
 /// Abstraction for blocks used in RSQF
-trait RankSelectBlock {
+pub trait RankSelectBlock {
     // Required methods:
     fn new() -> Self;
     fn get_occupieds(&self) -> u64;
@@ -18,7 +30,7 @@ trait RankSelectBlock {
 
 /// The possible results of the rank_select function
 #[derive(Debug, PartialEq, Eq)]
-enum RankSelectResult {
+pub enum RankSelectResult {
     Empty,                      // home slot unoccupied
     Full(usize),                // home slot occupied, last filled loc
     Overflow,                   // search went off the edge
@@ -27,7 +39,7 @@ enum RankSelectResult {
 /// RSQF abstraction:
 /// Any filter that implements the first set of methods
 /// gets the second set for free.
-trait RankSelectQuotientFilter {
+pub trait RankSelectQuotientFilter {
     type Block: RankSelectBlock;
 
     // Required methods:
@@ -358,7 +370,7 @@ pub mod rsqf {
         }
         fn new_seeded(n: usize, r: usize, seed: u32) -> RSQF {
             // add extra blocks for overflow
-            let nblocks = cmp::max(1, util::nearest_pow_of_2(n) / 64);
+            let nblocks = cmp::max(1, nearest_pow_of_2(n) / 64);
             let nslots = nblocks * 64;
             let q = (nslots as f64).log2() as usize;
             let mut blocks = Vec::with_capacity(nblocks);
@@ -1216,7 +1228,7 @@ pub mod rsqf {
             // Insert and query elts, ensure that there are no false negatives
             let a: usize = 1 << 14; // use set size 2^14
             let ratio = 100.0;      // a/s
-            let s = util::nearest_pow_of_2((a as f64/ratio) as usize);
+            let s = nearest_pow_of_2((a as f64/ratio) as usize);
             let s = ((s as f64) * 0.95) as usize;
             let mut filter = RSQF::new(s, 4);
             // Generate query set

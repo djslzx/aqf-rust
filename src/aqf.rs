@@ -1,4 +1,14 @@
-use super::*;
+use std::{cmp, collections::{HashSet, HashMap}};
+use rand::{
+    Rng, SeedableRng, rngs::SmallRng
+};
+use crate::{Rem, Filter};
+use crate::util::{bitarr::b64, nearest_pow_of_2, };
+use crate::rsqf::{
+    RankSelectBlock,
+    RankSelectResult,
+    RankSelectQuotientFilter,
+};
 
 #[derive(Debug)]
 struct Block {
@@ -7,6 +17,52 @@ struct Block {
     runends: u64,
     extensions: u64,
     offset: usize,
+}
+
+impl RankSelectBlock for Block {
+    fn new() -> Block {
+        Block {
+            remainders: [0; 64],
+            occupieds: 0,
+            runends: 0,
+            extensions: 0,
+            offset: 0,
+        }
+    }
+    fn get_occupieds(&self) -> u64 {
+        self.occupieds
+    }
+    fn is_occupied(&self, i: usize) -> bool {
+        b64::get(self.occupieds, i)
+    }
+    fn set_occupied(&mut self, i: usize, to: bool) {
+        self.occupieds = b64::set_to(self.occupieds, to, i);
+    }
+    fn get_runends(&self) -> u64 {
+        self.runends
+    }
+    fn is_runend(&self, i: usize) -> bool {
+        b64::get(self.runends, i)
+    }
+    fn set_runend(&mut self, i: usize, to: bool) {
+        self.runends = b64::set_to(self.runends, to, i);
+    }
+    fn get_remainder(&self, i: usize) -> Rem {
+        self.remainders[i]
+    }
+    fn set_remainder(&mut self, i: usize, to: Rem) {
+        self.remainders[i] = to;
+    }
+    fn get_offset(&self) -> usize {
+        self.offset
+    }
+    fn inc_offset(&mut self) {
+        self.offset += 1;
+    }
+}
+
+impl Block {
+    // TODO: extension encoding/decoding
 }
 
 #[derive(Debug)]
@@ -26,46 +82,15 @@ struct AQF {
     remote: HashMap<(usize, Rem), (String, u128)>,
 }
 
-/// The possible results of the rank_select function
-#[derive(Debug, PartialEq, Eq)]
-enum RankSelectResult {
-    Empty,                      // home slot unoccupied
-    Full(usize),                // home slot occupied, last filled loc
-    Overflow,                   // search went off the edge
-}
+impl RankSelectQuotientFilter for AQF {
+    type Block = Block;
 
-impl Block {
-    fn new() -> Block {
-        Block {
-            remainders: [0; 64],
-            occupieds: 0,
-            runends: 0,
-            extensions: 0,
-            offset: 0,
-        }
-    }
-    fn is_occupied(&self, i: usize) -> bool {
-        b64::get(self.occupieds, i)
-    }
-    fn set_occupied(&mut self, i: usize, to: bool) {
-        self.occupieds = b64::set_to(self.occupieds, to, i);
-    }
-    fn is_runend(&self, i: usize) -> bool {
-        b64::get(self.runends, i)
-    }
-    fn set_runend(&mut self, i: usize, to: bool) {
-        self.runends = b64::set_to(self.runends, to, i);
-    }
-    // TODO: extension encoding/decoding
-}
-
-impl AQF {
     fn new(n: usize, r: usize) -> AQF {
         Self::new_seeded(n, r, 0)
     }
     fn new_seeded(n: usize, r: usize, seed: u32) -> AQF {
         // add extra blocks for overflow
-        let nblocks = cmp::max(1, util::nearest_pow_of_2(n)/64);
+        let nblocks = cmp::max(1, nearest_pow_of_2(n)/64);
         let nslots = nblocks * 64;
         let q = (nslots as f64).log2() as usize;
         let mut blocks = Vec::with_capacity(nblocks);
@@ -84,251 +109,22 @@ impl AQF {
             remote: HashMap::new(),
         }
     }
-    fn remainder(&self, x: usize) -> Rem {
-        assert!(x < self.nslots, "x={}", x);
-        self.blocks[x/64].remainders[x%64]
-    }
-    fn is_runend(&self, x: usize) -> bool {
-        assert!(x < self.nslots, "x={}", x);
-        self.blocks[x/64].is_runend(x%64)
-    }
-    fn is_occupied(&self, x: usize) -> bool {
-        assert!(x < self.nslots, "x={}", x);
-        self.blocks[x/64].is_occupied(x%64)
-    }
-    fn set_runend(&mut self, x: usize, to: bool) {
-        assert!(x < self.nslots, "x={}", x);
-        self.blocks[x/64].set_runend(x%64, to);
-    }
-    fn set_occupied(&mut self, x: usize, to: bool) {
-        assert!(x < self.nslots, "x={}", x);
-        self.blocks[x/64].set_occupied(x%64, to);
-    }
-    fn set_remainder(&mut self, x: usize, rem: Rem) {
-        assert!(x < self.nslots, "x={}", x);
-        self.blocks[x/64].remainders[x%64] = rem;
-    }
+    fn q(&self) -> usize { self.q }
+    fn r(&self) -> usize { self.r }
+    fn nslots(&self) -> usize { self.nslots }
+    fn nblocks(&self) -> usize { self.nblocks }
+    fn seed(&self) -> u32 { self.seed }
+    fn get_block(&self, i: usize) -> &Block { &self.blocks[i] }
+    fn get_mut_block(&mut self, i: usize) -> &mut Block { &mut self.blocks[i] }
     fn add_block(&mut self) {
         let b = Block::new();
         self.blocks.push(b);
         self.nslots += 64;
         self.nblocks += 1;
     }
-    fn hash(&self, word: &str) -> u128 {
-        let ref mut b = word.as_bytes();
-        match murmur3::murmur3_x64_128(b, self.seed) {
-            Ok(v) => v,
-            Err(_) => panic!("Failed to hash word"),
-        }
-    }
-    // Take first q bits of hash
-    fn calc_quot(&self, hash: u128) -> usize {
-        (hash & ((1_u128 << self.q) - 1)) as usize
-    }
-    /// Get the k-th remainder for the hash
-    fn calc_rem(&self, hash: u128, k: usize) -> Rem {
-        // TODO: calc_rem by adding k extra bits instead of taking k-size chunks
+}
 
-        // If hash can only make C remainders and k > C, let h_k = h_{k mod C}
-        let capacity = (128 - self.q) / self.r;
-        let k = k % capacity;
-        // Get k-th chunk of r bits: bits in [a, b) where a=q+kr, b=q+(k+1)r
-        let a = self.q + k * self.r;
-        let b = a + self.r;
-        assert!(b <= 128, "Remainder chunk overflowed 128 bits (b={})", b);
-        let rem: Rem = ((hash & b128::half_open(a, b)) >> a) as Rem;
-        // Don' let hash be 0
-        if rem == 0 {
-            rem + 1
-        } else {
-            rem
-        }
-    }
-    /// Finds the absolute index of the rank-th runend past
-    /// the start of the block_i-th block.
-    /// Note: rank indexes from 0.
-    /// Returns None if no appropriate runend exists.
-    fn multiblock_select(&self, block_i: usize, rank: usize) -> Option<usize> {
-        assert!(block_i < self.nblocks, "Block index out of bounds");
-
-        let mut rank: u64 = rank as u64;
-        let mut step: usize; // select result
-        let mut loc: usize = block_i * 64; // absolute index of runend for input
-        let mut b: &Block; // block pointer
-
-        // Step through each block, decrementing rank and incrementing loc
-        // to count seen runends and advance to the correct block
-        loop {
-            b = &self.blocks[loc / 64];
-            step = bitselect(b.runends, if rank >= 64 { 63 } else { rank }) as usize;
-            loc += step;
-            if step != 64 || loc >= self.nslots {
-                break;
-            }
-            rank -= popcnt(b.runends); // account for seen runends
-        }
-
-        if loc >= self.nslots {
-            None
-        } else {
-            Some(loc)
-        }
-    }
-    /// Performs the blocked equivalent of the unblocked operation
-    ///   y = select(Q.runends, rank(Q.occupieds, x)).
-    /// Note: x indexes from 0.
-    ///
-    /// Return behavior:
-    /// - If y <= x, returns Empty
-    /// - If y > x, returns Full(y)
-    /// - If y runs off the edge, returns Overflow
-    fn rank_select(&self, x: usize) -> RankSelectResult {
-        // Exit early if x is obviously out of range
-        if x >= self.nslots {
-            return RankSelectResult::Overflow
-        }
-
-        let mut block_i = x / 64;
-        let slot_i = x % 64;
-        let mut b = &self.blocks[block_i];
-        let mut rank = bitrank(b.occupieds, slot_i);
-
-        // Exit early when the result of rank_select would be in a prior block.
-        // This happens when
-        // (1) slot is unoccupied and
-        // (2) block offset is 0
-        // (3) there are no runs before the slot in the block
-        if !b.is_occupied(slot_i) && b.offset == 0 && rank == 0 {
-            RankSelectResult::Empty
-        } else {
-            // Skip ahead to the block that offset is pointing inside
-            let offset = b.offset % 64;
-            block_i += b.offset / 64;
-            // Handle overflowing offset (offset runs off the edge)
-            if block_i >= self.nblocks {
-                return RankSelectResult::Overflow;
-            }
-            b = &self.blocks[block_i];
-            // Account for the runends before the offset in the current block
-            rank += if offset > 0 {
-                bitrank(b.runends, offset - 1)
-            } else {
-                0
-            };
-            // If rank(Q.occupieds, x) == 0, then there's nothing to see here
-            if rank == 0 {
-                RankSelectResult::Empty
-            } else {
-                // (rank-1) accounts for select's indexing from 0
-                match self.multiblock_select(block_i, (rank-1) as usize) {
-                    Some(loc) =>
-                        if loc < x {
-                            RankSelectResult::Empty
-                        } else {
-                            RankSelectResult::Full(loc)
-                        },
-                    None => RankSelectResult::Overflow,
-                }
-            }
-        }
-    }
-    /// Finds the first unused slot at or after absloc x.
-    /// Returns None if no slot found;
-    /// otherwise, returns Some(y) where y is the first open slot
-    fn first_unused_slot(&self, x: usize) -> Option<usize> {
-        let mut x = x;
-        loop {
-            match self.rank_select(x) {
-                RankSelectResult::Empty => break Some(x),
-                RankSelectResult::Full(loc) =>
-                    if x <= loc {
-                        x = loc + 1;
-                    } else {
-                        break Some(x);
-                    }
-                RankSelectResult::Overflow => break None,
-            }
-        }
-    }
-    /// Shift the remainders and runends in [a,b] forward by 1 into [a+1, b+1]
-    fn shift_remainders_and_runends(&mut self, a: usize, b: usize) {
-        // TODO: use bit shifts instead of repeatedly masking
-        for i in (a..=b).rev() {
-            self.set_remainder(i+1, self.remainder(i));
-            self.set_runend(i+1, self.is_runend(i));
-        }
-        self.set_runend(a, false);
-    }
-    /// Increment direct/indirect offsets with targets in [a,b]
-    /// to reflect shifting remainders/runends in [a,b]
-    fn inc_offsets(&mut self, a: usize, b: usize) {
-        assert!(a < self.nslots && b < self.nslots,
-                "Parameters out of bounds: a={}, b={}, nslots={}",
-                a, b, self.nslots);
-        // Exit early if invalid range
-        if a > b {
-            return;
-        }
-        // Start block_i at the first block after b, clamping it so it doesn't go off the end,
-        // and work backwards
-        let mut block_i = cmp::min(b/64 + 1, self.nblocks - 1);
-        loop {
-            // Account for direct/indirect offsets:
-            // If direct, b[0] is occupied and target = x + offset
-            // If indirect, b[0] is unoccupied and target = x + offset - 1
-            let block_start = block_i * 64;
-            let block = &mut self.blocks[block_i];
-            // If block_i == 0, then the offset must be direct, as there's no valid indirect target
-            if block_i == 0 && !block.is_occupied(0) {
-                break;
-            }
-            let target = block_start + block.offset - if block.is_occupied(0) { 0 } else { 1 };
-            if target < a {
-                // If we've stepped back far enough, exit
-                break;
-            } else if target <= b {
-                // If a <= target <= b, increment offset
-                block.offset += 1;
-            }
-            // If we're on the first block, we can't step back further: exit
-            if block_i == 0 {
-                break;
-            }
-            // Step back by one block
-            block_i -= 1;
-        }
-    }
-    /// Increment indirect offsets targeting loc for quot's run
-    fn inc_indirect_offsets(&mut self, quot: usize, loc: usize) {
-        assert!(loc < self.nslots && quot < self.nslots,
-                "Parameters out of bounds: quot={}, x={}",
-                quot, loc);
-        // Start block_i at the first block after b, clamping it so it doesn't go off the end
-        let mut block_i = cmp::min(loc/64 + 1, self.nblocks - 1);
-        // Walk through backwards from the first block after b
-        loop {
-            if block_i == 0 { break; }
-            let block_start = block_i * 64;
-            let block = &mut self.blocks[block_i];
-            let target = block_start + block.offset - 1;
-            // If we've stepped back far enough, exit
-            if target < loc {
-                break;
-            }
-            // If target == loc, b[0] isn't occupied (offset is indirect),
-            // and quot < block_start (indirect offsets target runends
-            // that start in earlier blocks)
-            if target == loc && !block.is_occupied(0) && quot < block_start {
-                block.offset += 1;
-            }
-            // If we're on the first block, we can't step back further: exit
-            if block_i == 0 {
-                break;
-            }
-            // Step back by one block
-            block_i -= 1;
-        }
-    }
+impl AQF {
     /// Insert a (quot, rem) pair into filter
     fn raw_insert(&mut self, quot: usize, rem: Rem) {
         assert!(quot < self.nslots);
@@ -404,7 +200,7 @@ impl Filter<String> for AQF {
             if let RankSelectResult::Full(mut loc) = self.rank_select(quot) {
                 loop {
                     // If matching remainder found, return true
-                    if self.remainder(loc) == rem {
+                    if self.get_remainder(loc) == rem {
                         break true;
                     }
                     // Stop when l < 0, l < quot, or l is a runend
@@ -440,7 +236,7 @@ mod tests {
         // Insert and query elts, ensure that there are no false negatives
         let a: usize = 1 << 14; // use set size 2^14
         let ratio = 100.0;      // a/s
-        let s = util::nearest_pow_of_2((a as f64/ratio) as usize);
+        let s = nearest_pow_of_2((a as f64/ratio) as usize);
         let s = ((s as f64) * 0.95) as usize;
         let mut filter = AQF::new(s, 4);
         // Generate query set

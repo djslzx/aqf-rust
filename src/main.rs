@@ -1,18 +1,11 @@
 #![feature(asm)] // Use assembly implementations of rank and select
 #![allow(dead_code)]
 
-use murmur3;
-use rand::{
-    Rng, SeedableRng,
-};
-use rand::rngs::SmallRng;
-use std::{cmp, collections::{HashSet, HashMap}};
+/// Arithmetic code
 mod arcd;
+
+/// Bit manipulation utilities
 mod util;
-use util::{
-    bitarr::{b128, b64},
-    bitrank, bitselect, popcnt,
-};
 
 // TODO: change based on rem size
 type Rem = u8;

@@ -22,11 +22,11 @@ trait Filter<T> {
     fn insert(&mut self, elt: T);
 }
 
-/// Adaptive Quotient Filter
-mod aqf;
-
 /// Rank-and-Select Quotient Filter
 mod rsqf;
+
+/// Adaptive Quotient Filter
+mod aqf;
 
 fn main() {
 

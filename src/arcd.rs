@@ -29,9 +29,8 @@ fn to_bits(letter: u64) -> AdaptBits {
     if len == 0 {
         AdaptBits::None
     } else {
-        let bits = letter - ((1 << len) - 1);
         AdaptBits::Some {
-            bits,
+            bits: letter - ((1 << len) - 1),
             len: len as usize
         }
     }

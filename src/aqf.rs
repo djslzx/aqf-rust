@@ -34,8 +34,6 @@ enum RankSelectResult {
     Overflow,                   // search went off the edge
 }
 
-use RankSelectResult::*;
-
 impl Block {
     fn new() -> Block {
         Block {
@@ -58,7 +56,7 @@ impl Block {
     fn set_runend(&mut self, i: usize, to: bool) {
         self.runends = b64::set_to(self.runends, to, i);
     }
-    // TODO: selector encoding/decoding
+    // TODO: extension encoding/decoding
 }
 
 impl AQF {
@@ -187,7 +185,7 @@ impl AQF {
     fn rank_select(&self, x: usize) -> RankSelectResult {
         // Exit early if x is obviously out of range
         if x >= self.nslots {
-            return Overflow
+            return RankSelectResult::Overflow
         }
 
         let mut block_i = x / 64;
@@ -201,14 +199,14 @@ impl AQF {
         // (2) block offset is 0
         // (3) there are no runs before the slot in the block
         if !b.is_occupied(slot_i) && b.offset == 0 && rank == 0 {
-            Empty
+            RankSelectResult::Empty
         } else {
             // Skip ahead to the block that offset is pointing inside
             let offset = b.offset % 64;
             block_i += b.offset / 64;
             // Handle overflowing offset (offset runs off the edge)
             if block_i >= self.nblocks {
-                return Overflow;
+                return RankSelectResult::Overflow;
             }
             b = &self.blocks[block_i];
             // Account for the runends before the offset in the current block
@@ -219,17 +217,17 @@ impl AQF {
             };
             // If rank(Q.occupieds, x) == 0, then there's nothing to see here
             if rank == 0 {
-                Empty
+                RankSelectResult::Empty
             } else {
                 // (rank-1) accounts for select's indexing from 0
                 match self.multiblock_select(block_i, (rank-1) as usize) {
                     Some(loc) =>
                         if loc < x {
-                            Empty
+                            RankSelectResult::Empty
                         } else {
-                            Full(loc)
+                            RankSelectResult::Full(loc)
                         },
-                    None => Overflow,
+                    None => RankSelectResult::Overflow,
                 }
             }
         }
@@ -241,14 +239,14 @@ impl AQF {
         let mut x = x;
         loop {
             match self.rank_select(x) {
-                Empty => break Some(x),
-                Full(loc) =>
+                RankSelectResult::Empty => break Some(x),
+                RankSelectResult::Full(loc) =>
                     if x <= loc {
                         x = loc + 1;
                     } else {
                         break Some(x);
                     }
-                Overflow => break None,
+                RankSelectResult::Overflow => break None,
             }
         }
     }
@@ -258,8 +256,8 @@ impl AQF {
         for i in (a..=b).rev() {
             self.set_remainder(i+1, self.remainder(i));
             self.set_runend(i+1, self.is_runend(i));
-            self.set_runend(i, false);
         }
+        self.set_runend(a, false);
     }
     /// Increment direct/indirect offsets with targets in [a,b]
     /// to reflect shifting remainders/runends in [a,b]
@@ -338,12 +336,12 @@ impl AQF {
 
         // Find the appropriate runend
         match self.rank_select(quot) {
-            Empty => {
+            RankSelectResult::Empty => {
                 self.set_occupied(quot, true);
                 self.set_runend(quot, true);
                 self.set_remainder(quot, rem);
             }
-            Full(r) => {
+            RankSelectResult::Full(r) => {
                 // Find u, the first open slot after r, and
                 // shift everything in [r+1, u-1] forward by 1 into [r+2, u],
                 // leaving r+1 writable
@@ -374,7 +372,7 @@ impl AQF {
                     self.inc_offsets(r, r);
                 }
             }
-            Overflow =>
+            RankSelectResult::Overflow =>
                 panic!(
                     "AQF failed to find runend (nslots={}, quot=(block={}, slot={}))",
                     self.nslots, quot/64, quot%64,
@@ -403,7 +401,7 @@ impl Filter<String> for AQF {
         if !self.is_occupied(quot) {
             false
         } else {
-            if let Full(mut loc) = self.rank_select(quot) {
+            if let RankSelectResult::Full(mut loc) = self.rank_select(quot) {
                 loop {
                     // If matching remainder found, return true
                     if self.remainder(loc) == rem {
@@ -435,5 +433,36 @@ impl Filter<String> for AQF {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
+    #[test]
+    fn test_insert_and_query() {
+        // Insert and query elts, ensure that there are no false negatives
+        let a: usize = 1 << 14; // use set size 2^14
+        let ratio = 100.0;      // a/s
+        let s = util::nearest_pow_of_2((a as f64/ratio) as usize);
+        let s = ((s as f64) * 0.95) as usize;
+        let mut filter = AQF::new(s, 4);
+        // Generate query set
+        let mut rng = SmallRng::seed_from_u64(0);
+        let mut set = HashSet::with_capacity(s);
+        for _i in 0..s {
+            let elt = (rng.gen::<usize>() % a).to_string();
+            set.insert(elt.clone());
+            filter.insert(elt.clone());
+        }
+        println!("|set|: {}, s={}, a={}, load={}",
+                 set.len(), s, a, filter.load());
+        // Query [0, a] and ensure that all items in the set return true
+        let mut fps = 0;
+        for i in 0..a {
+            let elt = &i.to_string();
+            if set.contains(elt) {
+                assert!(filter.query(elt.clone()), "elt={}", elt);
+            } else {
+                fps += filter.query(elt.clone()) as usize;
+            }
+        }
+        println!("FP rate: {}", (fps as f64)/(a as f64));
+    }
 }

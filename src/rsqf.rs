@@ -249,8 +249,8 @@ impl RSQF {
         for i in (a..=b).rev() {
             self.set_remainder(i+1, self.remainder(i));
             self.set_runend(i+1, self.is_runend(i));
-            self.set_runend(i, false);
         }
+        self.set_runend(a, false);
     }
     /// Increment direct/indirect offsets with targets in [a,b]
     /// to reflect shifting remainders/runends in [a,b]

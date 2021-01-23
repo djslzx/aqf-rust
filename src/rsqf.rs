@@ -16,15 +16,15 @@ use crate::util::{
 pub trait RankSelectBlock {
     // Required methods:
     fn new() -> Self;
-    fn get_occupieds(&self) -> u64;
+    fn occupieds(&self) -> u64;
     fn is_occupied(&self, i: usize) -> bool;
     fn set_occupied(&mut self, i: usize, to: bool);
-    fn get_runends(&self) -> u64;
+    fn runends(&self) -> u64;
     fn is_runend(&self, i: usize) -> bool;
     fn set_runend(&mut self, i: usize, to: bool);
-    fn get_remainder(&self, i: usize) -> Rem;
+    fn remainder(&self, i: usize) -> Rem;
     fn set_remainder(&mut self, i: usize, to: Rem);
-    fn get_offset(&self) -> usize;
+    fn offset(&self) -> usize;
     fn inc_offset(&mut self);
 }
 
@@ -50,29 +50,29 @@ pub trait RankSelectQuotientFilter {
     fn nslots(&self) -> usize;
     fn nblocks(&self) -> usize;
     fn seed(&self) -> u32;
-    fn get_block(&self, i: usize) -> &Self::Block;
-    fn get_mut_block(&mut self, i: usize) -> &mut Self::Block;
+    fn block(&self, i: usize) -> &Self::Block;
+    fn mut_block(&mut self, i: usize) -> &mut Self::Block;
     fn add_block(&mut self);
 
     // Received methods:
     // Metadata getters/setters
     fn is_occupied(&self, i: usize) -> bool {
-        self.get_block(i/64).is_occupied(i%64)
+        self.block(i/64).is_occupied(i%64)
     }
     fn set_occupied(&mut self, i: usize, to: bool) {
-        self.get_mut_block(i/64).set_occupied(i%64, to);
+        self.mut_block(i/64).set_occupied(i%64, to);
     }
     fn is_runend(&self, i: usize) -> bool {
-        self.get_block(i/64).is_runend(i%64)
+        self.block(i/64).is_runend(i%64)
     }
     fn set_runend(&mut self, i: usize, to: bool) {
-        self.get_mut_block(i/64).set_runend(i%64, to);
+        self.mut_block(i/64).set_runend(i%64, to);
     }
-    fn get_remainder(&self, i: usize) -> Rem {
-        self.get_block(i/64).get_remainder(i%64)
+    fn remainder(&self, i: usize) -> Rem {
+        self.block(i/64).remainder(i%64)
     }
     fn set_remainder(&mut self, i: usize, to: Rem) {
-        self.get_mut_block(i/64).set_remainder(i%64, to);
+        self.mut_block(i/64).set_remainder(i%64, to);
     }
     // Hashing
     fn hash(&self, word: &str) -> u128 {
@@ -84,10 +84,13 @@ pub trait RankSelectQuotientFilter {
     }
     /// Use first q bits of quotient
     fn calc_quot(&self, hash: u128) -> usize {
-        (hash & ((1 << self.q()) - 1)) as usize
+        (hash & b128::ones(self.q())) as usize
+    }
+    fn calc_rem(&self, hash: u128) -> Rem {
+        (hash & b128::half_open(self.q(), self.q() + self.r())) as Rem
     }
     /// Get the k-th remainder for the hash
-    fn calc_rem(&self, hash: u128, k: usize) -> Rem {
+    fn calc_kth_rem(&self, hash: u128, k: usize) -> Rem {
         let q = self.q();
         let r = self.r();
 
@@ -121,8 +124,8 @@ pub trait RankSelectQuotientFilter {
         // Step through each block, decrementing rank and incrementing loc
         // to count seen runends and advance to the correct block
         loop {
-            let b = self.get_block(loc/64);
-            let runends = b.get_runends();
+            let b = self.block(loc/64);
+            let runends = b.runends();
             step = bitselect(runends, if rank >= 64 { 63 } else { rank }) as usize;
             loc += step;
             if step != 64 || loc >= nslots {
@@ -153,28 +156,28 @@ pub trait RankSelectQuotientFilter {
 
         let mut block_i = x / 64;
         let slot_i = x % 64;
-        let mut b = self.get_block(block_i);
-        let mut rank = bitrank(b.get_occupieds(), slot_i);
+        let mut b = self.block(block_i);
+        let mut rank = bitrank(b.occupieds(), slot_i);
 
         // Exit early when the result of rank_select would be in a prior block.
         // This happens when
         // (1) slot is unoccupied and
         // (2) block offset is 0
         // (3) there are no runs before the slot in the block
-        if !b.is_occupied(slot_i) && b.get_offset() == 0 && rank == 0 {
+        if !b.is_occupied(slot_i) && b.offset() == 0 && rank == 0 {
             RankSelectResult::Empty
         } else {
             // Skip ahead to the block that offset is pointing inside
-            let offset = b.get_offset() % 64;
-            block_i += b.get_offset() / 64;
+            let offset = b.offset() % 64;
+            block_i += b.offset() / 64;
             // Handle overflowing offset (offset runs off the edge)
             if block_i >= self.nblocks() {
                 return RankSelectResult::Overflow;
             }
-            b = self.get_block(block_i);
+            b = self.block(block_i);
             // Account for the runends before the offset in the current block
             rank += if offset > 0 {
-                bitrank(b.get_runends(), offset - 1)
+                bitrank(b.runends(), offset - 1)
             } else {
                 0
             };
@@ -217,7 +220,7 @@ pub trait RankSelectQuotientFilter {
     fn shift_remainders_and_runends(&mut self, a: usize, b: usize) {
         // TODO: use bit shifts instead of repeatedly masking
         for i in (a..=b).rev() {
-            self.set_remainder(i+1, self.get_remainder(i));
+            self.set_remainder(i+1, self.remainder(i));
             self.set_runend(i+1, self.is_runend(i));
         }
         self.set_runend(a, false);
@@ -240,12 +243,12 @@ pub trait RankSelectQuotientFilter {
             // If direct, b[0] is occupied and target = x + offset
             // If indirect, b[0] is unoccupied and target = x + offset - 1
             let block_start = block_i * 64;
-            let block = self.get_mut_block(block_i);
+            let block = self.mut_block(block_i);
             // If block_i == 0, then the offset must be direct, as there's no valid indirect target
             if block_i == 0 && !block.is_occupied(0) {
                 break;
             }
-            let target = block_start + block.get_offset() - if block.is_occupied(0) { 0 } else { 1 };
+            let target = block_start + block.offset() - if block.is_occupied(0) { 0 } else { 1 };
             if target < a {
                 // If we've stepped back far enough, exit
                 break;
@@ -272,8 +275,8 @@ pub trait RankSelectQuotientFilter {
         loop {
             if block_i == 0 { break; }
             let block_start = block_i * 64;
-            let block = self.get_mut_block(block_i);
-            let target = block_start + block.get_offset() - 1;
+            let block = self.mut_block(block_i);
+            let target = block_start + block.offset() - 1;
             // If we've stepped back far enough, exit
             if target < loc {
                 break;
@@ -311,7 +314,8 @@ pub mod rsqf {
     struct RSQF {
         blocks: Vec<Block>,
         nblocks: usize,
-        nslots: usize,
+        nslots: usize,   // number of slots (nblocks * 64)
+        nelts: usize,    // number of inserted elements
 
         // Sizes
         p: usize, // Fingerprint size
@@ -330,7 +334,7 @@ pub mod rsqf {
                 offset: 0,
             }
         }
-        fn get_occupieds(&self) -> u64 {
+        fn occupieds(&self) -> u64 {
             self.occupieds
         }
         fn is_occupied(&self, i: usize) -> bool {
@@ -339,7 +343,7 @@ pub mod rsqf {
         fn set_occupied(&mut self, i: usize, to: bool) {
             self.occupieds = b64::set_to(self.occupieds, to, i);
         }
-        fn get_runends(&self) -> u64 {
+        fn runends(&self) -> u64 {
             self.runends
         }
         fn is_runend(&self, i: usize) -> bool {
@@ -348,13 +352,13 @@ pub mod rsqf {
         fn set_runend(&mut self, i: usize, to: bool) {
             self.runends = b64::set_to(self.runends, to, i);
         }
-        fn get_remainder(&self, i: usize) -> Rem {
+        fn remainder(&self, i: usize) -> Rem {
             self.remainders[i]
         }
         fn set_remainder(&mut self, i: usize, to: Rem) {
             self.remainders[i] = to;
         }
-        fn get_offset(&self) -> usize {
+        fn offset(&self) -> usize {
             self.offset
         }
         fn inc_offset(&mut self) {
@@ -382,6 +386,7 @@ pub mod rsqf {
                 blocks,
                 nblocks,
                 nslots,
+                nelts: 0,
                 q,
                 r,
                 p: q + r,
@@ -403,10 +408,10 @@ pub mod rsqf {
         fn seed(&self) -> u32 {
             self.seed
         }
-        fn get_block(&self, i: usize) -> &Block {
+        fn block(&self, i: usize) -> &Block {
             &self.blocks[i]
         }
-        fn get_mut_block(&mut self, i: usize) -> &mut Block {
+        fn mut_block(&mut self, i: usize) -> &mut Block {
             &mut self.blocks[i]
         }
         fn add_block(&mut self) {
@@ -421,7 +426,7 @@ pub mod rsqf {
         /// Insert a (quot, rem) pair into filter
         fn raw_insert(&mut self, quot: usize, rem: Rem) {
             assert!(quot < self.nslots);
-            assert!(rem > 0);       // FIXME: not necessary?
+            self.nelts += 1;
 
             // Find the appropriate runend
             match self.rank_select(quot) {
@@ -470,14 +475,7 @@ pub mod rsqf {
         }
         /// Computes filter load factor
         fn load(&self) -> f64 {
-            // TODO: fix this so it doesn't rely on remainders being nonzero
-            let mut count = 0;
-            for b in self.blocks.iter() {
-                for rem in b.remainders.iter() {
-                    count += (*rem != 0) as i32;
-                }
-            }
-            (count as f64)/(self.nslots as f64)
+            (self.nelts as f64)/(self.nslots as f64)
         }
     }
 
@@ -485,7 +483,7 @@ pub mod rsqf {
         fn query(&self, elt: String) -> bool {
             let hash = self.hash(&elt[..]);
             let quot = self.calc_quot(hash);
-            let rem = self.calc_rem(hash, 0); // TODO: get 0-th rem for now
+            let rem = self.calc_rem(hash); // TODO: get 0-th rem for now
 
             if !self.is_occupied(quot) {
                 false
@@ -493,7 +491,7 @@ pub mod rsqf {
                 if let RankSelectResult::Full(mut loc) = self.rank_select(quot) {
                     loop {
                         // If matching remainder found, return true
-                        if self.get_remainder(loc) == rem {
+                        if self.remainder(loc) == rem {
                             break true;
                         }
                         // Stop when l < 0, l < quot, or l is a runend
@@ -514,7 +512,7 @@ pub mod rsqf {
         fn insert(&mut self, elt: String) {
             let hash = self.hash(&elt[..]);
             let quot = self.calc_quot(hash);
-            let rem = self.calc_rem(hash, 0);
+            let rem = self.calc_rem(hash);
             self.raw_insert(quot, rem);
         }
     }
@@ -537,24 +535,24 @@ pub mod rsqf {
             let hash = 0x1234_ABCD_0000_0000__0000_0000_0000_0000_u128;
             for i in 0..(128-6)/4 {
                 let rem = if_0_inc(mask_rem(hash, q + r*i, q+r*(i+1)));
-                assert_eq!(filter.calc_rem(hash, i), rem);
+                assert_eq!(filter.calc_kth_rem(hash, i), rem);
             }
             // First remainder is 0, bumped up to 1 to satisfy nonzero rem invariant
-            assert_eq!(filter.calc_rem(0, 0), 1);
-            assert_eq!(filter.calc_rem(1, 0), 1);
-            assert_eq!(filter.calc_rem(0b11_1111, 0), 1);
+            assert_eq!(filter.calc_kth_rem(0, 0), 1);
+            assert_eq!(filter.calc_kth_rem(1, 0), 1);
+            assert_eq!(filter.calc_kth_rem(0b11_1111, 0), 1);
             // 7 set bits -> rem = 0b1
-            assert_eq!(filter.calc_rem(0b111_1111, 0), 1);
-            assert_eq!(filter.calc_rem(0b1111_1111, 0), 0b11);
-            assert_eq!(filter.calc_rem(0b1_1111_1111, 0), 0b111);
-            assert_eq!(filter.calc_rem(0b11_1111_1111, 0), 0b1111);
+            assert_eq!(filter.calc_kth_rem(0b111_1111, 0), 1);
+            assert_eq!(filter.calc_kth_rem(0b1111_1111, 0), 0b11);
+            assert_eq!(filter.calc_kth_rem(0b1_1111_1111, 0), 0b111);
+            assert_eq!(filter.calc_kth_rem(0b11_1111_1111, 0), 0b1111);
 
-            let hash = 0b11_1100_0011_1100_0011_1111;
+            let hash = 0b11_1100_00_11_1100_0011_1111;
             assert_eq!(filter.calc_quot(hash), 0b11_1111);
-            assert_eq!(filter.calc_rem(hash, 0), 1); // 0x0
-            assert_eq!(filter.calc_rem(hash, 1), 0xf);
-            assert_eq!(filter.calc_rem(hash, 2), 1);
-            assert_eq!(filter.calc_rem(hash, 3), 0xf);
+            assert_eq!(filter.calc_kth_rem(hash, 0), 1); // 0x0
+            assert_eq!(filter.calc_kth_rem(hash, 1), 0xf);
+            assert_eq!(filter.calc_kth_rem(hash, 2), 1);
+            assert_eq!(filter.calc_kth_rem(hash, 3), 0xf);
         }
         #[test]
         fn test_multiblock_select_single_block() {
@@ -869,7 +867,7 @@ pub mod rsqf {
             // Manually insert 'apples'
             let hash = filter.hash(word);
             let quot = filter.calc_quot(hash);
-            let rem = filter.calc_rem(hash, 0);
+            let rem = filter.calc_rem(hash);
             let b = &mut filter.blocks[0];
             b.remainders[quot] = rem;
             b.set_occupied(quot, true);
@@ -888,7 +886,7 @@ pub mod rsqf {
             for word in words.iter() {
                 let hash = filter.hash(word);
                 let quot = filter.calc_quot(hash);
-                let rem = filter.calc_rem(hash, 0);
+                let rem = filter.calc_rem(hash);
                 // println!("word={}, quot={:x}, rem={:x}", word, quot, rem);
 
                 let b = &mut filter.blocks[0];
@@ -919,7 +917,7 @@ pub mod rsqf {
             // Manually insert 'apples'
             let hash = filter.hash(word);
             let quot = filter.calc_quot(hash);
-            let rem = filter.calc_rem(hash, 0);
+            let rem = filter.calc_rem(hash);
             let b = &mut filter.blocks[quot/64];
             b.remainders[quot%64] = rem;
             b.set_occupied(quot%64, true);
@@ -937,7 +935,7 @@ pub mod rsqf {
             for word in words.iter() {
                 let hash = filter.hash(word);
                 let quot = filter.calc_quot(hash);
-                let rem = filter.calc_rem(hash, 0);
+                let rem = filter.calc_rem(hash);
                 // println!("word={}, quot={:x}, rem={:x}", word, quot, rem);
 
                 let b = &mut filter.blocks[quot/64];
@@ -959,11 +957,11 @@ pub mod rsqf {
             }
             // Shift [0, nslots-2] to [1, nslots-1] and clear [0]
             filter.shift_remainders_and_runends(0, filter.nslots-2);
-            assert_eq!(filter.get_remainder(0), 0);
+            assert_eq!(filter.remainder(0), 0);
             assert_eq!(filter.is_runend(0), false);
             for i in 1..filter.nslots {
                 let j = (i as Rem) - 1;
-                assert_eq!(filter.get_remainder(i), j);
+                assert_eq!(filter.remainder(i), j);
                 assert_eq!(filter.is_runend(i), j % 3 == 0);
             }
         }
@@ -1140,7 +1138,7 @@ pub mod rsqf {
             for i in 1..filter.nslots {
                 assert_eq!(filter.is_occupied(i), is_pow_2(i));
                 assert_eq!(filter.is_runend(i), is_pow_2(i));
-                assert_eq!(filter.get_remainder(i),
+                assert_eq!(filter.remainder(i),
                            if is_pow_2(i) { i } else { 0 } as Rem);
             }
         }
@@ -1169,7 +1167,7 @@ pub mod rsqf {
             for i in 0..filter.nslots {
                 assert_eq!(filter.is_occupied(i), i==0 || i==131, "i={}", i);
                 assert_eq!(filter.is_runend(i), i==130 || i==131, "i={}", i);
-                assert_eq!(filter.get_remainder(i),
+                assert_eq!(filter.remainder(i),
                            if i < 131 { i as Rem }
                            else if i == 131 { 0xff }
                            else { 0 },
@@ -1182,7 +1180,7 @@ pub mod rsqf {
             for i in 0..filter.nslots {
                 assert_eq!(filter.is_occupied(i), i==0 || i==10, "i={}", i);
                 assert_eq!(filter.is_runend(i), i==130 || i==131, "i={}", i);
-                assert_eq!(filter.get_remainder(i),
+                assert_eq!(filter.remainder(i),
                            if i < 131 { i as Rem }
                            else if i == 131 { 0xff }
                            else { 0 },
@@ -1195,7 +1193,7 @@ pub mod rsqf {
             for i in 0..filter.nslots {
                 assert_eq!(filter.is_occupied(i), i==0, "i={}", i);
                 assert_eq!(filter.is_runend(i), i==131, "i={}", i);
-                assert_eq!(filter.get_remainder(i),
+                assert_eq!(filter.remainder(i),
                            if i <= 131 { i as Rem }
                            else { 0 },
                            "i={}",
@@ -1214,7 +1212,7 @@ pub mod rsqf {
             for i in 0..filter.nslots {
                 assert_eq!(filter.is_occupied(i), i < 128, "i={}", i);
                 assert_eq!(filter.is_runend(i), i > 0 && i <= 128, "i={}", i);
-                assert_eq!(filter.get_remainder(i),
+                assert_eq!(filter.remainder(i),
                            if i==0 { 0 }
                            else if i==1 { 0xff }
                            else if i <= 128 { (i-1) as Rem }

@@ -114,6 +114,9 @@ pub mod bitarr {
         pub fn closed(a: usize, b: usize) -> u128 {
             self::half_open(a, b + 1)
         }
+        pub fn ones(k: usize) -> u128 {
+            (1 << k) - 1
+        }
         #[cfg(test)]
         mod tests {
             use super::*;
@@ -136,6 +139,13 @@ pub mod bitarr {
                 assert_eq!(closed(0, 126), !(1 << 127), "{:x}", closed(0, 126));
                 assert_eq!(closed(1, 126), !0 << 2 >> 1, "{:x}", closed(1, 126));
             }
+            #[test]
+            fn test_ones() {
+                for i in 0..64 {
+                    assert_eq!(ones(i), half_open(0, i));
+                }
+            }
+
         }
     }
 }

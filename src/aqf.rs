@@ -3,7 +3,7 @@ use rand::{
     Rng, SeedableRng, rngs::SmallRng
 };
 use crate::{Rem, Filter};
-use crate::util::{bitarr::b64, nearest_pow_of_2, };
+use crate::util::{bitarr::{b64, b128}, nearest_pow_of_2, };
 use crate::rsqf::{
     RankSelectBlock,
     RankSelectResult,
@@ -29,7 +29,7 @@ impl RankSelectBlock for Block {
             offset: 0,
         }
     }
-    fn get_occupieds(&self) -> u64 {
+    fn occupieds(&self) -> u64 {
         self.occupieds
     }
     fn is_occupied(&self, i: usize) -> bool {
@@ -38,7 +38,7 @@ impl RankSelectBlock for Block {
     fn set_occupied(&mut self, i: usize, to: bool) {
         self.occupieds = b64::set_to(self.occupieds, to, i);
     }
-    fn get_runends(&self) -> u64 {
+    fn runends(&self) -> u64 {
         self.runends
     }
     fn is_runend(&self, i: usize) -> bool {
@@ -47,13 +47,13 @@ impl RankSelectBlock for Block {
     fn set_runend(&mut self, i: usize, to: bool) {
         self.runends = b64::set_to(self.runends, to, i);
     }
-    fn get_remainder(&self, i: usize) -> Rem {
+    fn remainder(&self, i: usize) -> Rem {
         self.remainders[i]
     }
     fn set_remainder(&mut self, i: usize, to: Rem) {
         self.remainders[i] = to;
     }
-    fn get_offset(&self) -> usize {
+    fn offset(&self) -> usize {
         self.offset
     }
     fn inc_offset(&mut self) {
@@ -70,6 +70,7 @@ struct AQF {
     blocks: Vec<Block>,
     nblocks: usize,
     nslots: usize,
+    nelts: usize,
 
     // Sizes
     p: usize, // Fingerprint size
@@ -102,6 +103,7 @@ impl RankSelectQuotientFilter for AQF {
             blocks,
             nblocks,
             nslots,
+            nelts: 0,
             q,
             r,
             p: q + r,
@@ -114,13 +116,24 @@ impl RankSelectQuotientFilter for AQF {
     fn nslots(&self) -> usize { self.nslots }
     fn nblocks(&self) -> usize { self.nblocks }
     fn seed(&self) -> u32 { self.seed }
-    fn get_block(&self, i: usize) -> &Block { &self.blocks[i] }
-    fn get_mut_block(&mut self, i: usize) -> &mut Block { &mut self.blocks[i] }
+    fn block(&self, i: usize) -> &Block { &self.blocks[i] }
+    fn mut_block(&mut self, i: usize) -> &mut Block { &mut self.blocks[i] }
     fn add_block(&mut self) {
         let b = Block::new();
         self.blocks.push(b);
         self.nslots += 64;
         self.nblocks += 1;
+    }
+    ///
+    fn calc_kth_rem(&self, hash: u128, k: usize) -> Rem {
+        let (a, b) = (self.q, self.q + self.r + k);
+        assert!(b <= 128, "Remainder size overflowed 128 bits");
+        let rem = ((hash & b128::half_open(a, b)) >> a) as Rem;
+        if rem == 0 {
+            1
+        } else {
+            rem
+        }
     }
 }
 
@@ -128,7 +141,7 @@ impl AQF {
     /// Insert a (quot, rem) pair into filter
     fn raw_insert(&mut self, quot: usize, rem: Rem) {
         assert!(quot < self.nslots);
-        assert!(rem > 0);       // FIXME: not necessary?
+        self.nelts += 1;
 
         // Find the appropriate runend
         match self.rank_select(quot) {
@@ -177,14 +190,7 @@ impl AQF {
     }
     /// Computes filter load factor
     fn load(&self) -> f64 {
-        // TODO: fix this so it doesn't rely on remainders being nonzero
-        let mut count = 0;
-        for b in self.blocks.iter() {
-            for rem in b.remainders.iter() {
-                count += (*rem != 0) as i32;
-            }
-        }
-        (count as f64)/(self.nslots as f64)
+        (self.nelts as f64)/(self.nslots as f64)
     }
 }
 
@@ -192,7 +198,7 @@ impl Filter<String> for AQF {
     fn query(&self, elt: String) -> bool {
         let hash = self.hash(&elt[..]);
         let quot = self.calc_quot(hash);
-        let rem = self.calc_rem(hash, 0); // TODO: get 0-th rem for now
+        let rem = self.calc_rem(hash); // TODO: get 0-th rem for now
 
         if !self.is_occupied(quot) {
             false
@@ -200,7 +206,7 @@ impl Filter<String> for AQF {
             if let RankSelectResult::Full(mut loc) = self.rank_select(quot) {
                 loop {
                     // If matching remainder found, return true
-                    if self.get_remainder(loc) == rem {
+                    if self.remainder(loc) == rem {
                         break true;
                     }
                     // Stop when l < 0, l < quot, or l is a runend
@@ -221,7 +227,7 @@ impl Filter<String> for AQF {
     fn insert(&mut self, elt: String) {
         let hash = self.hash(&elt[..]);
         let quot = self.calc_quot(hash);
-        let rem = self.calc_rem(hash, 0);
+        let rem = self.calc_rem(hash);
         self.raw_insert(quot, rem);
         self.remote.insert((quot,rem), (elt, hash));
     }

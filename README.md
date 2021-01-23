@@ -17,6 +17,8 @@ An implementation of the Adaptive Quotient Filter (AQF) in Rust.
     - [ ] Adapt on lookups
 - Testing
   - [ ] Add integration tests (adversary, file-based, etc.)
+- Organization
+  - [ ] Make RSQF a supertrait of Filter
 
 ## Implementation notes
 The logic is very close to that of the C implementation, with a few notable differences:

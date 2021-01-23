@@ -8,13 +8,14 @@ An implementation of the Adaptive Quotient Filter (AQF) in Rust.
   - [x] Add remote representation
   - [ ] Test remote rep (can't do yet until we start adapting)
 - Arithmetic coding and fingerprint extensions
-  - [x] Transcribe old arithmetic coding
-    - [ ] Test
-  - [x] Write functions translating between fingerprint extension bits and the letters used in the arithmetic code
-    - [x] Test 
+  - [x] Transcribe old arithmetic coding (tested)
+  - [x] Write functions translating between fingerprint extension bits and the letters used in the arithmetic code (tested)
   - [ ] Write new arithmetic coding (optimized for new probability distribution)
   - [ ] Integrate changes into `aqf` module
-    - [ ] Adapt on lookups
+    - [ ] encode/decode for individual letters
+    - [ ] shift encoding across a range (potentially spanning multiple blocks) by 1
+    - [ ] adapt a remainder
+      - add/extend an extension until it doesn't clash with the elt causing a false pos
 - Testing
   - [ ] Add integration tests (adversary, file-based, etc.)
 - Organization

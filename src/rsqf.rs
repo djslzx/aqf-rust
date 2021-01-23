@@ -1251,6 +1251,15 @@ pub mod rsqf {
             }
             println!("FP rate: {}", (fps as f64)/(a as f64));
         }
+        #[test]
+        fn test_load() {
+            // Insert some elts in filter and check load factor
+            let mut filter = RSQF::new(1000, 4);
+            for i in 0..500 {
+                filter.insert(i.to_string());
+            }
+            assert_eq!(filter.load(), 500_f64/(filter.nslots as f64));
+        }
     }
 }
 

@@ -8,7 +8,7 @@ const LG_ADAPTS: usize = 2;     // lg(adapt_rate)
 const LG_EPS: usize = 4;        // -lg(eps)
 
 #[derive(Debug)]
-enum AdaptBits {
+pub enum AdaptBits {
     None,
     Some {bits: u64, len: usize},
 }
@@ -24,7 +24,7 @@ fn floor_log(x: u64) -> u32 {
 /// Converts a letter to adapt bits
 ///   len = floor(log2(letter + 1))
 ///   bits = letter - (2^len - 1)
-fn to_bits(letter: u64) -> AdaptBits {
+pub fn to_bits(letter: u64) -> AdaptBits {
     let len = floor_log(letter+1) as usize;
     if len == 0 {
         AdaptBits::None
@@ -39,7 +39,7 @@ fn to_bits(letter: u64) -> AdaptBits {
 /// Converts adaptivity bits to a letter
 ///   letter = 0                   if len=0
 ///          = (2^len - 1) + bits  if len>0
-fn to_letter(bits: &AdaptBits) -> u64 {
+pub fn to_letter(bits: &AdaptBits) -> u64 {
     match *bits {
         AdaptBits::None => 0,
         AdaptBits::Some {bits, len} => {
@@ -128,7 +128,7 @@ trait Arcd {
 }
 
 // For reference
-mod old_arcd {
+pub mod old_arcd {
     use super::*;
 
     /// Multiply x by (k-1)/k
@@ -158,7 +158,7 @@ mod old_arcd {
             mult_eps_frac(x >> LG_ADAPTS >> (LG_EPS * (letter-1) as usize))
         }
     }
-    fn encode(input: [u64; 64]) -> Option<u64> {
+    pub fn encode(input: [u64; 64]) -> Option<u64> {
         let mut low: u64 = 0;
         let mut high: u64 = !0 >> (64 - CODE_LEN);
 
@@ -185,7 +185,7 @@ mod old_arcd {
         }
         Some(low)
     }
-    fn decode(input: u64) -> [u64; 64] {
+    pub fn decode(input: u64) -> [u64; 64] {
         let mut low: u64 = 0;
         let mut high: u64 = !0 >> (64 - CODE_LEN);
         let mut out = [0; 64];

@@ -9,6 +9,12 @@ use crate::rsqf::{
     RankSelectResult,
     RankSelectQuotientFilter,
 };
+use crate::arcd::{
+    old_arcd,
+    AdaptBits,
+    to_bits,
+    to_letter,
+};
 
 #[derive(Debug)]
 struct Block {
@@ -80,7 +86,7 @@ struct AQF {
     seed: u32,
 
     // Remote representation
-    remote: HashMap<(usize, Rem), (String, u128)>,
+    remote: HashMap<(usize, Rem), String)>,
 }
 
 impl RankSelectQuotientFilter for AQF {
@@ -90,7 +96,6 @@ impl RankSelectQuotientFilter for AQF {
         Self::new_seeded(n, r, 0)
     }
     fn new_seeded(n: usize, r: usize, seed: u32) -> AQF {
-        // add extra blocks for overflow
         let nblocks = cmp::max(1, nearest_pow_of_2(n)/64);
         let nslots = nblocks * 64;
         let q = (nslots as f64).log2() as usize;
@@ -138,6 +143,14 @@ impl RankSelectQuotientFilter for AQF {
 }
 
 impl AQF {
+    fn calc_extension(&self, hash: u128, k: usize) -> u64 {
+        debug_assert_ne!(k, 0);
+        let a = self.q + self.r;
+        let b = a + k;
+        assert!(b <= 64, "Extension overflowed 64 bits, b={}", b);
+        ((hash & b128::half_open(a, b)) >> a) as u64
+    }
+
     /// Insert a (quot, rem) pair into filter
     fn raw_insert(&mut self, quot: usize, rem: Rem) {
         assert!(quot < self.nslots);
@@ -164,6 +177,7 @@ impl AQF {
                     }
                 };
                 self.shift_remainders_and_runends(r+1, u-1);
+                // TODO: also shift fingerprint extensions
                 self.inc_offsets(r+1, u-1);
                 // Start a new run or extend an existing one
                 if !self.is_occupied(quot) {
@@ -171,6 +185,7 @@ impl AQF {
                     self.set_occupied(quot, true);
                     self.set_runend(r+1, true);
                     self.set_remainder(r+1, rem);
+                    // TODO: add fingerprint extension
                     self.inc_indirect_offsets(quot, r);
                 } else {
                     // Don't need to set occupied
@@ -178,6 +193,7 @@ impl AQF {
                     self.set_runend(r, false);
                     self.set_runend(r+1, true);
                     self.set_remainder(r+1, rem);
+                    // TODO: add fingerprint extension
                     self.inc_offsets(r, r);
                 }
             }
@@ -198,25 +214,55 @@ impl Filter<String> for AQF {
     fn query(&self, elt: String) -> bool {
         let hash = self.hash(&elt[..]);
         let quot = self.calc_quot(hash);
-        let rem = self.calc_rem(hash); // TODO: get 0-th rem for now
+        let rem = self.calc_rem(hash);
 
         if !self.is_occupied(quot) {
             false
         } else {
             if let RankSelectResult::Full(mut loc) = self.rank_select(quot) {
+                let mut block_i: usize;
+                let mut decode: [u64; 64];
+
                 loop {
-                    // If matching remainder found, return true
+                    // Matching remainder found
                     if self.remainder(loc) == rem {
-                        break true;
+                        // Extract extension
+                        let b = &self.blocks[loc/64];
+                        // Check if cached code is the same (FIXME)
+                        if block_i != loc/64 {
+                            block_i = loc/64;
+                            decode = old_arcd::decode(b.extensions);
+                        }
+                        match to_bits(decode[loc%64]) {
+                            AdaptBits::None => {
+                                // extensions match; check remote to see if true match
+                                if let Some(word) = self.remote.get(&(quot, rem)) {
+                                    if word != elt {
+                                        // false match, adapt
+                                        return true;
+                                    }
+                                }
+                            }
+                            AdaptBits::Some {bits, len} => {
+                                // check if extensions match
+                                let query_ext = self.calc_extension(hash, len);
+                                if query_ext == bits {
+                                    // extensions match; check remote to see if true match
+                                    if let Some(word) = self.remote.get(&(quot, rem)) {
+                                        if word != elt {
+                                            // false match, adapt
+                                            return true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
-                    // Stop when l < 0, l < quot, or l is a runend
-                    if loc == 0 {
-                        break false;
+                    // Stop when l < 0, l-1 < quot, or l-1 is a runend
+                    if loc == 0 || loc-1 < quot || self.is_runend(loc-1) {
+                        return false;
                     } else {
                         loc -= 1;
-                        if loc < quot || self.is_runend(loc) {
-                            break false;
-                        }
                     }
                 }
             } else {
@@ -229,7 +275,7 @@ impl Filter<String> for AQF {
         let quot = self.calc_quot(hash);
         let rem = self.calc_rem(hash);
         self.raw_insert(quot, rem);
-        self.remote.insert((quot,rem), (elt, hash));
+        self.remote.insert((quot,rem), elt);
     }
 }
 
@@ -237,6 +283,18 @@ impl Filter<String> for AQF {
 mod tests {
     use super::*;
 
+    #[test]
+    fn test_calc_extension() {
+        let filter = AQF::new(128, 4);
+        let hash = filter.hash("apple");
+        let start = filter.q + filter.r;
+        for i in 1..(64 - start) {
+            assert_eq!(
+                filter.calc_extension(hash, i),
+                ((hash & b128::half_open(start,start+i)) >> start) as u64,
+            );
+        }
+    }
     #[test]
     fn test_insert_and_query() {
         // Insert and query elts, ensure that there are no false negatives

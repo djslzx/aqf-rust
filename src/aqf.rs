@@ -86,7 +86,7 @@ struct AQF {
     seed: u32,
 
     // Remote representation
-    remote: HashMap<(usize, Rem), String)>,
+    remote: HashMap<(usize, Rem), String>,
 }
 
 impl RankSelectQuotientFilter for AQF {
@@ -220,42 +220,39 @@ impl Filter<String> for AQF {
             false
         } else {
             if let RankSelectResult::Full(mut loc) = self.rank_select(quot) {
-                let mut block_i: usize;
-                let mut decode: [u64; 64];
-
+                // Cache decoded letters as (block_i, letters), using block_i
+                // to check whether we need to update letters
+                let mut decode: Option<(usize, [u64; 64])> = None;
                 loop {
-                    // Matching remainder found
+                    // Matching remainder found => compare extensions
                     if self.remainder(loc) == rem {
-                        // Extract extension
-                        let b = &self.blocks[loc/64];
-                        // Check if cached code is the same (FIXME)
-                        if block_i != loc/64 {
-                            block_i = loc/64;
-                            decode = old_arcd::decode(b.extensions);
+                        // Check if cached code is the same
+                        match decode {
+                            // Update cached code if cache empty or
+                            // the current loc is in a new block
+                            None |
+                            Some((block_i, letters)) if block_i != loc/64 => {
+                                let ext = self.blocks[loc/64].extensions;
+                                decode = Some((loc/64,
+                                               old_arcd::decode(ext)));
+                            }
+                            _ => ()
                         }
                         match to_bits(decode[loc%64]) {
-                            AdaptBits::None => {
-                                // extensions match; check remote to see if true match
+                            // Extensions match
+                            AdaptBits::None |
+                            AdaptBits::Some {bits, len}
+                            if self.calc_extension(hash, len) == bits => {
+                                // Check remote to see if true match
                                 if let Some(word) = self.remote.get(&(quot, rem)) {
                                     if word != elt {
-                                        // false match, adapt
+                                        // false match
+                                        // TODO: adapt
                                         return true;
                                     }
                                 }
                             }
-                            AdaptBits::Some {bits, len} => {
-                                // check if extensions match
-                                let query_ext = self.calc_extension(hash, len);
-                                if query_ext == bits {
-                                    // extensions match; check remote to see if true match
-                                    if let Some(word) = self.remote.get(&(quot, rem)) {
-                                        if word != elt {
-                                            // false match, adapt
-                                            return true;
-                                        }
-                                    }
-                                }
-                            }
+                            _ => ()
                         }
                     }
                     // Stop when l < 0, l-1 < quot, or l-1 is a runend

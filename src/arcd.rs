@@ -144,11 +144,11 @@ pub mod ext_arcd {
                 match adapt_bits {
                     AdaptBits::None => {
                         high = low + gap;
-                    },
+                    }
                     AdaptBits::Some {bits, len} => {
                         low += gap;
                         gap = (range >> 5) + (range >> 6);
-                        for _ in 1..len {
+                        for _ in 1..*len {
                             low += gap;
                             gap >>= 1;
                         }

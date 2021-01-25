@@ -89,26 +89,6 @@ pub trait RankSelectQuotientFilter {
     fn calc_rem(&self, hash: u128) -> Rem {
         ((hash & b128::half_open(self.q(), self.q() + self.r())) >> self.q()) as Rem
     }
-    /// Get the k-th remainder for the hash
-    fn calc_kth_rem(&self, hash: u128, k: usize) -> Rem {
-        let q = self.q();
-        let r = self.r();
-
-        // If hash can only make C remainders and k > C, let h_k = h_{k mod C}
-        let capacity = (128 - q) / r;
-        let k = k % capacity;
-        // Get k-th chunk of r bits: bits in [a, b) where a=q+kr, b=q+(k+1)r
-        let a = q + k * r;
-        let b = a + r;
-        assert!(b <= 128, "Remainder chunk overflowed 128 bits (b={})", b);
-        let rem: Rem = ((hash & b128::half_open(a, b)) >> a) as Rem;
-        // Don' let hash be 0
-        if rem == 0 {
-            1
-        } else {
-            rem
-        }
-    }
     /// Finds the absolute index of the rank-th runend past
     /// the start of the block_i-th block.
     /// Note: rank indexes from 0.
@@ -423,6 +403,26 @@ pub mod rsqf {
     }
 
     impl RSQF {
+        /// Get the k-th remainder for the hash
+        fn calc_kth_rem(&self, hash: u128, k: usize) -> Rem {
+            let q = self.q();
+            let r = self.r();
+
+            // If hash can only make C remainders and k > C, let h_k = h_{k mod C}
+            let capacity = (128 - q) / r;
+            let k = k % capacity;
+            // Get k-th chunk of r bits: bits in [a, b) where a=q+kr, b=q+(k+1)r
+            let a = q + k * r;
+            let b = a + r;
+            assert!(b <= 128, "Remainder chunk overflowed 128 bits (b={})", b);
+            let rem: Rem = ((hash & b128::half_open(a, b)) >> a) as Rem;
+            // Don' let hash be 0
+            if rem == 0 {
+                1
+            } else {
+                rem
+            }
+        }
         /// Insert a (quot, rem) pair into filter
         fn raw_insert(&mut self, quot: usize, rem: Rem) {
             assert!(quot < self.nslots);

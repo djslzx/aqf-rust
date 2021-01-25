@@ -13,6 +13,16 @@ pub enum AdaptBits {
     Some {bits: u64, len: usize},
 }
 
+/// Error type for encoding failure
+#[derive(Debug, Clone)]
+pub struct EncodingFailure;
+
+/// Arithmetic code
+pub trait Arcd {
+    fn encode(input: [u64; 64]) -> Result<u64, EncodingFailure>;
+    fn decode(input: u64) -> [u64; 64];
+}
+
 /// Computes floor(log2(x)) by counting the number of leading 0s
 /// to get the position of the first leading 1
 fn floor_log(x: u64) -> u32 {
@@ -117,16 +127,6 @@ mod tests {
     }
 }
 
-/// Arithmetic code
-/// Define helper functions that encode/decode need; as long as a type
-/// implements the helpers, it'll have access to encode/decode
-trait Arcd {
-    // TODO: implement
-    fn encode(input: [u64; 64]) -> Option<u64>;
-    // TODO: implement
-    fn decode(input: u64) -> [u64; 64];
-}
-
 // For reference
 pub mod old_arcd {
     use super::*;
@@ -158,60 +158,66 @@ pub mod old_arcd {
             mult_eps_frac(x >> LG_ADAPTS >> (LG_EPS * (letter-1) as usize))
         }
     }
-    pub fn encode(input: [u64; 64]) -> Option<u64> {
-        let mut low: u64 = 0;
-        let mut high: u64 = !0 >> (64 - CODE_LEN);
 
-        for i in 0..64 {
-            let letter = input[i];
-            let range = high - low;
-            let first_range = mult_n_frac(range);
+    pub struct OldArcd;
 
-            if letter == 0 {
-                high = low + first_range;
-            } else {
-                let mut total = 0;
-                for j in 0..letter-1 {
-                    total += range >> (LG_EPS * j as usize) >> LG_ADAPTS;
+    impl Arcd for OldArcd {
+        fn encode(input: [u64; 64]) -> Result<u64, EncodingFailure> {
+            let mut low: u64 = 0;
+            let mut high: u64 = !0 >> (64 - CODE_LEN);
+
+            for i in 0..64 {
+                let letter = input[i];
+                let range = high - low;
+                let first_range = mult_n_frac(range);
+
+                if letter == 0 {
+                    high = low + first_range;
+                } else {
+                    let mut total = 0;
+                    for j in 0..letter-1 {
+                        total += range >> (LG_EPS * j as usize) >> LG_ADAPTS;
+                    }
+                    let top = range >> (LG_EPS * (letter - 1) as usize);
+                    low += first_range + mult_eps_frac(total);
+                    high = low + (mult_eps_frac(top) >> LG_ADAPTS);
                 }
-                let top = range >> (LG_EPS * (letter - 1) as usize);
-                low += first_range + mult_eps_frac(total);
-                high = low + (mult_eps_frac(top) >> LG_ADAPTS);
-            }
-            // Check if out of bits
-            if high - low < 2 {
-                return None
-            }
-        }
-        Some(low)
-    }
-    pub fn decode(input: u64) -> [u64; 64] {
-        let mut low: u64 = 0;
-        let mut high: u64 = !0 >> (64 - CODE_LEN);
-        let mut out = [0; 64];
-
-        for i in 0..64 {
-            let range = high - low;
-            let first_range = mult_n_frac(range);
-            if low + first_range > input {
-                high = low + first_range;
-            } else {
-                let mut letter = 0;
-                let mut total = 0_u64;
-                let mut last_total = 0_u64;
-                while low + first_range + mult_eps_frac(total) <= input {
-                    last_total = total;
-                    total += range >> LG_EPS * letter >> LG_ADAPTS;
-                    letter += 1;
+                // Check if out of bits
+                if high - low < 2 {
+                    return Err(EncodingFailure)
                 }
-                let top = range >> (LG_EPS * (letter - 1));
-                out[i] = letter as u64;
-                low += first_range + mult_eps_frac(last_total);
-                high = low + (mult_eps_frac(top) >> LG_ADAPTS);
             }
+            Ok(low)
         }
-        out
+        fn decode(input: u64) -> [u64; 64] {
+            let mut low: u64 = 0;
+            let mut high: u64 = !0 >> (64 - CODE_LEN);
+            let mut out = [0; 64];
+
+            for i in 0..64 {
+                let range = high - low;
+                let first_range = mult_n_frac(range);
+                if low + first_range > input {
+                    high = low + first_range;
+                } else {
+                    let mut letter = 0;
+                    let mut total = 0_u64;
+                    let mut last_total = 0_u64;
+                    while low + first_range + mult_eps_frac(total) <= input {
+                        last_total = total;
+                        total += range >> LG_EPS * letter >> LG_ADAPTS;
+                        letter += 1;
+                    }
+                    let top = range >> (LG_EPS * (letter - 1));
+                    out[i] = letter as u64;
+                    low += first_range + mult_eps_frac(last_total);
+                    high = low + (mult_eps_frac(top) >> LG_ADAPTS);
+                }
+            }
+            out
+        }
     }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -291,10 +297,10 @@ pub mod old_arcd {
             }
             // Check for each x in int_inputs that x = decode(encode(x))
             for input in int_inputs {
-                match encode(input) {
+                match OldArcd::encode(input) {
                     // Encoding succeeds
-                    Some(code) => {
-                        let decoded = decode(code);
+                    Ok(code) => {
+                        let decoded = OldArcd::decode(code);
                         assert_eq!(
                             input, decoded,
                             "x={:?}, encode(x)={}, decode(encode(x))={:?}",
@@ -302,7 +308,7 @@ pub mod old_arcd {
                         );
                     },
                     // Encoding fails (out of bits)
-                    None => {
+                    Err(_) => {
                         // Failed to encode but sequence encoding shouldn't overflow
                         // => error
                         if let Ok(size) = range_size(input) {

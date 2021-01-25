@@ -10,7 +10,8 @@ use crate::rsqf::{
     RankSelectQuotientFilter,
 };
 use crate::arcd::{
-    old_arcd,
+    Arcd,
+    old_arcd::OldArcd,
     AdaptBits,
     to_bits,
     to_letter,
@@ -86,7 +87,7 @@ struct AQF {
     seed: u32,
 
     // Remote representation
-    remote: HashMap<(usize, Rem), String>,
+    remote: HashMap<(usize, Rem), (String, u128)>,
 }
 
 impl RankSelectQuotientFilter for AQF {
@@ -143,12 +144,36 @@ impl RankSelectQuotientFilter for AQF {
 }
 
 impl AQF {
-    fn calc_extension(&self, hash: u128, k: usize) -> u64 {
+    fn calc_ext(&self, hash: u128, k: usize) -> u64 {
         debug_assert_ne!(k, 0);
         let a = self.q + self.r;
         let b = a + k;
         assert!(b <= 64, "Extension overflowed 64 bits, b={}", b);
         ((hash & b128::half_open(a, b)) >> a) as u64
+    }
+    /// Generate the shortest extension from the member's hash that doesn't conflict with
+    /// the non-member's hash. 
+    /// `prev_ext` is the extension previously associated with the member's hash.
+    fn shortest_diff_ext(member_hash: u128, non_member_hash: u128, len: usize) -> (u64, usize) {
+        panic!("unimplemented");
+        // TODO
+    }
+    /// Adapt on a false match for a fingerprint at loc
+    fn adapt(&mut self, loc: usize, member_hash: u128, non_member_hash: u128, len: usize, mut letters: [u64; 64]) {
+        let (new_ext, new_len) = Self::shortest_diff_ext(member_hash,non_member_hash, len);
+        let letter = to_letter(&AdaptBits::Some {
+            bits: new_ext,
+            len: new_len,
+        });
+        // Write encoding to the appropriate block
+        letters[loc%64] = letter;
+        match OldArcd::encode(letters) {
+            Ok(code) =>
+                self.blocks[loc/64].extensions = code,
+            Err(_) => {
+                // Encoding failed: rebuild (TODO)
+            }
+        }
     }
 
     /// Insert a (quot, rem) pair into filter
@@ -211,10 +236,10 @@ impl AQF {
 }
 
 impl Filter<String> for AQF {
-    fn query(&self, elt: String) -> bool {
-        let hash = self.hash(&elt[..]);
-        let quot = self.calc_quot(hash);
-        let rem = self.calc_rem(hash);
+    fn query(&mut self, elt: String) -> bool {
+        let query_hash = self.hash(&elt[..]);
+        let quot = self.calc_quot(query_hash);
+        let rem = self.calc_rem(query_hash);
 
         if !self.is_occupied(quot) {
             false
@@ -226,33 +251,59 @@ impl Filter<String> for AQF {
                 loop {
                     // Matching remainder found => compare extensions
                     if self.remainder(loc) == rem {
-                        // Check if cached code is the same
+                        // Check cached code:
                         match decode {
-                            // Update cached code if cache empty or
-                            // the current loc is in a new block
-                            None |
-                            Some((block_i, letters)) if block_i != loc/64 => {
+                            // If cached block index is the same as the current index,
+                            // leave cache as is
+                            Some((block_i, _)) if block_i == loc/64 => {}
+                            // Otherwise, decode and store result in cache
+                            _ => {
                                 let ext = self.blocks[loc/64].extensions;
-                                decode = Some((loc/64,
-                                               old_arcd::decode(ext)));
+                                decode = Some((loc/64, OldArcd::decode(ext)));
                             }
-                            _ => ()
                         }
-                        match to_bits(decode[loc%64]) {
-                            // Extensions match
-                            AdaptBits::None |
-                            AdaptBits::Some {bits, len}
-                            if self.calc_extension(hash, len) == bits => {
+                        // Check if extensions match:
+                        // We should be able to unwrap w/o error b/c of the previous match
+                        let letters = decode.unwrap().1;
+                        match to_bits(letters[loc%64]) {
+                            // No extension, so match by default
+                            AdaptBits::None => {
                                 // Check remote to see if true match
-                                if let Some(word) = self.remote.get(&(quot, rem)) {
-                                    if word != elt {
-                                        // false match
-                                        // TODO: adapt
-                                        return true;
+                                // TODO: think about only storing the hash in remote and ditching
+                                // the word (comparing word to elt is potentially slow)
+                                if let Some((word, remote_hash)) = self.remote.get(&(quot, rem)) {
+                                    if *word != elt {
+                                        // false match => adapt
+                                        self.adapt(
+                                            loc,
+                                            *remote_hash,
+                                            query_hash,
+                                            0,
+                                            letters,
+                                        );
                                     }
                                 }
+                                return true;
                             }
-                            _ => ()
+                            // Extension exists and matches
+                            AdaptBits::Some {bits, len} if self.calc_ext(query_hash, len) == bits => {
+                                // Check remote to see if true match
+                                if let Some((word, remote_hash)) = self.remote.get(&(quot, rem)) {
+                                    if *word != elt {
+                                        // false match => adapt
+                                        self.adapt(
+                                            loc,
+                                            *remote_hash,
+                                            query_hash,
+                                            len,
+                                            letters,
+                                        )
+                                    }
+                                }
+                                return true;
+                            }
+                            // If extensions don't match, move on
+                            _ => {}
                         }
                     }
                     // Stop when l < 0, l-1 < quot, or l-1 is a runend
@@ -272,7 +323,7 @@ impl Filter<String> for AQF {
         let quot = self.calc_quot(hash);
         let rem = self.calc_rem(hash);
         self.raw_insert(quot, rem);
-        self.remote.insert((quot,rem), elt);
+        self.remote.insert((quot,rem), (elt, hash));
     }
 }
 
@@ -287,7 +338,7 @@ mod tests {
         let start = filter.q + filter.r;
         for i in 1..(64 - start) {
             assert_eq!(
-                filter.calc_extension(hash, i),
+                filter.calc_ext(hash, i),
                 ((hash & b128::half_open(start,start+i)) >> start) as u64,
             );
         }

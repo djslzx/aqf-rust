@@ -11,7 +11,7 @@ mod util;
 type Rem = u8;
 
 trait Filter<T> {
-    fn query(&self, elt: T) -> bool;
+    fn query(&mut self, elt: T) -> bool;
     fn insert(&mut self, elt: T);
 }
 

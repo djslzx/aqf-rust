@@ -480,7 +480,7 @@ pub mod rsqf {
     }
 
     impl Filter<String> for RSQF {
-        fn query(&self, elt: String) -> bool {
+        fn query(&mut self, elt: String) -> bool {
             let hash = self.hash(&elt[..]);
             let quot = self.calc_quot(hash);
             let rem = self.calc_rem(hash); // TODO: get 0-th rem for now
@@ -852,7 +852,7 @@ pub mod rsqf {
         #[test]
         /// Empty single-block filter
         fn test_query_empty_single() {
-            let filter = RSQF::new(64, 4);
+            let mut filter = RSQF::new(64, 4);
             for i in 0..64 {
                 let word = i.to_string();
                 assert!(!filter.query(word.clone()), "word='{}'", word);
@@ -902,7 +902,7 @@ pub mod rsqf {
         #[test]
         // Empty multi-block filter
         fn test_query_empty_multi() {
-            let filter = RSQF::new(64*3, 4);
+            let mut filter = RSQF::new(64*3, 4);
             for i in 0..filter.nslots {
                 let word = i.to_string();
                 assert!(!filter.query(word.to_string()), "word={}", word);

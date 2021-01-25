@@ -87,7 +87,7 @@ pub trait RankSelectQuotientFilter {
         (hash & b128::ones(self.q())) as usize
     }
     fn calc_rem(&self, hash: u128) -> Rem {
-        (hash & b128::half_open(self.q(), self.q() + self.r())) as Rem
+        ((hash & b128::half_open(self.q(), self.q() + self.r())) >> self.r()) as Rem
     }
     /// Get the k-th remainder for the hash
     fn calc_kth_rem(&self, hash: u128, k: usize) -> Rem {

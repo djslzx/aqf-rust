@@ -11,7 +11,7 @@ use crate::rsqf::{
 };
 use crate::arcd::{
     Arcd,
-    old_arcd::OldArcd,
+    selector_arcd::SelectorArcd,
     AdaptBits,
     to_bits,
     to_letter,
@@ -173,7 +173,7 @@ impl AQF {
         });
         // Write encoding to the appropriate block
         letters[loc%64] = letter;
-        match OldArcd::encode(letters) {
+        match SelectorArcd::encode(letters) {
             Ok(code) =>
                 self.blocks[loc/64].extensions = code,
             Err(_) => {
@@ -266,7 +266,7 @@ impl Filter<String> for AQF {
                             // Otherwise, decode and store result in cache
                             _ => {
                                 let ext = self.blocks[loc/64].extensions;
-                                decode = Some((loc/64, OldArcd::decode(ext)));
+                                decode = Some((loc/64, SelectorArcd::decode(ext)));
                             }
                         }
                         // Check if extensions match:

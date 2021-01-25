@@ -7,7 +7,7 @@ const CODE_LEN: usize = 56;     // length of arithmetic code
 const LG_ADAPTS: usize = 2;     // lg(adapt_rate)
 const LG_EPS: usize = 4;        // -lg(eps)
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum AdaptBits {
     None,
     Some {bits: u64, len: usize},
@@ -18,9 +18,9 @@ pub enum AdaptBits {
 pub struct EncodingFailure;
 
 /// Arithmetic code
-pub trait Arcd {
-    fn encode(input: [u64; 64]) -> Result<u64, EncodingFailure>;
-    fn decode(input: u64) -> [u64; 64];
+pub trait Arcd<I, O> {
+    fn encode(input: [I; 64]) -> Result<O, EncodingFailure>;
+    fn decode(input: O) -> [I; 64];
 }
 
 /// Computes floor(log2(x)) by counting the number of leading 0s
@@ -127,8 +127,85 @@ mod tests {
     }
 }
 
-// For reference
-pub mod old_arcd {
+/// Arithmetic code used for extension-based adaptivity
+pub mod ext_arcd {
+    use super::*;
+
+    pub struct ExtensionArcd;
+
+    impl Arcd<AdaptBits, u64> for ExtensionArcd {
+        fn encode(input: [AdaptBits; 64]) -> Result<u64, EncodingFailure> {
+            let mut low: u64 = 0;
+            let mut high: u64 = !0 >> (64 - CODE_LEN);
+
+            for i in 0..64 {
+                let (bits, len) = match input[i] {
+                    AdaptBits::None => (0, 0),
+                    AdaptBits::Some { bits, len} => (bits, len),
+                };
+                let range = high - low;
+                let mut gap = (range >> 1) + (range >> 2) + (range >> 3) + (range >> 5);
+                if len == 0 {
+                    high = low + gap;
+                } else {
+                    low += gap;
+                    gap = (range >> 5) + (range >> 6);
+                    for _ in 1..len {
+                        low += gap;
+                        gap >>= 1;
+                    }
+                    gap >>= len;
+                    low += bits * gap;
+                    high = low + gap;
+                }
+                if high - low < 2 {
+                    return Err(EncodingFailure);
+                }
+            }
+            Ok(low)
+        }
+        fn decode(input: u64) -> [AdaptBits; 64] {
+            let mut low: u64 = 0;
+            let mut high: u64 = !0 >> (64 - CODE_LEN);
+            let mut out = [AdaptBits::None; 64];
+
+            for i in 0..64 {
+                let bits;
+                let len;
+                let range = high - low;
+                let mut gap = (range >> 1) + (range >> 2) + (range >> 3) + (range >> 5);
+                if low + gap > input {
+                    high = low + gap;
+                    len = 0;
+                    bits = 0;
+                } else {
+                    low += gap;
+                    gap = (range >> 5) + (range >> 6);
+                    let mut l = 1;
+                    while low + gap <= input {
+                        low += gap;
+                        gap >>= 1;
+                        l += 1;
+                    }
+                    len = l;
+                    gap >>= l;
+                    bits = (input - low)/gap;
+                    low += bits * gap;
+                    high = low + gap;
+                }
+                out[i] = if len == 0 {
+                    AdaptBits::None
+                } else {
+                    AdaptBits::Some {bits, len}
+                };
+            }
+            out
+        }
+    }
+}
+
+/// Arithmetic code used for selector-based adaptivity
+pub mod selector_arcd {
     use super::*;
 
     /// Multiply x by (k-1)/k
@@ -159,9 +236,9 @@ pub mod old_arcd {
         }
     }
 
-    pub struct OldArcd;
+    pub struct SelectorArcd;
 
-    impl Arcd for OldArcd {
+    impl Arcd<u64, u64> for SelectorArcd {
         fn encode(input: [u64; 64]) -> Result<u64, EncodingFailure> {
             let mut low: u64 = 0;
             let mut high: u64 = !0 >> (64 - CODE_LEN);
@@ -297,10 +374,10 @@ pub mod old_arcd {
             }
             // Check for each x in int_inputs that x = decode(encode(x))
             for input in int_inputs {
-                match OldArcd::encode(input) {
+                match SelectorArcd::encode(input) {
                     // Encoding succeeds
                     Ok(code) => {
-                        let decoded = OldArcd::decode(code);
+                        let decoded = SelectorArcd::decode(code);
                         assert_eq!(
                             input, decoded,
                             "x={:?}, encode(x)={}, decode(encode(x))={:?}",

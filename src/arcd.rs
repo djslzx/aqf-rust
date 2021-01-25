@@ -138,25 +138,24 @@ pub mod ext_arcd {
             let mut low: u64 = 0;
             let mut high: u64 = !0 >> (64 - CODE_LEN);
 
-            for i in 0..64 {
-                let (bits, len) = match input[i] {
-                    AdaptBits::None => (0, 0),
-                    AdaptBits::Some { bits, len} => (bits, len),
-                };
+            for adapt_bits in input.iter() {
                 let range = high - low;
                 let mut gap = (range >> 1) + (range >> 2) + (range >> 3) + (range >> 5);
-                if len == 0 {
-                    high = low + gap;
-                } else {
-                    low += gap;
-                    gap = (range >> 5) + (range >> 6);
-                    for _ in 1..len {
+                match adapt_bits {
+                    AdaptBits::None => {
+                        high = low + gap;
+                    },
+                    AdaptBits::Some {bits, len} => {
                         low += gap;
-                        gap >>= 1;
+                        gap = (range >> 5) + (range >> 6);
+                        for _ in 1..len {
+                            low += gap;
+                            gap >>= 1;
+                        }
+                        gap >>= len;
+                        low += bits * gap;
+                        high = low + gap;
                     }
-                    gap >>= len;
-                    low += bits * gap;
-                    high = low + gap;
                 }
                 if high - low < 2 {
                     return Err(EncodingFailure);

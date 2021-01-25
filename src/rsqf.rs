@@ -87,7 +87,7 @@ pub trait RankSelectQuotientFilter {
         (hash & b128::ones(self.q())) as usize
     }
     fn calc_rem(&self, hash: u128) -> Rem {
-        ((hash & b128::half_open(self.q(), self.q() + self.r())) >> self.r()) as Rem
+        ((hash & b128::half_open(self.q(), self.q() + self.r())) >> self.q()) as Rem
     }
     /// Get the k-th remainder for the hash
     fn calc_kth_rem(&self, hash: u128, k: usize) -> Rem {
@@ -529,7 +529,7 @@ pub mod rsqf {
         }
 
         #[test]
-        fn test_calc_quot_rem() {
+        fn test_calc_quot_kth_rem() {
             let filter = RSQF::new(64, 4);
             let (r, q) = (4, 6);
             let hash = 0x1234_ABCD_0000_0000__0000_0000_0000_0000_u128;
@@ -553,6 +553,15 @@ pub mod rsqf {
             assert_eq!(filter.calc_kth_rem(hash, 1), 0xf);
             assert_eq!(filter.calc_kth_rem(hash, 2), 1);
             assert_eq!(filter.calc_kth_rem(hash, 3), 0xf);
+        }
+        #[test]
+        fn test_calc_rem() {
+            let filter = RSQF::new(64, 4);
+            let hash = 0b1001_1100_111111;
+            assert_eq!(filter.calc_quot(hash), 0b111111);
+            assert_eq!(filter.calc_rem(hash), 0b1100, "left={:b}, right={:b}", filter.calc_rem(hash), 0b1100);
+            assert_eq!(filter.calc_kth_rem(hash,0), 0b1100);
+            assert_eq!(filter.calc_kth_rem(hash,1), 0b1001);
         }
         #[test]
         fn test_multiblock_select_single_block() {

@@ -7,7 +7,7 @@ const CODE_LEN: usize = 56;     // length of arithmetic code
 const LG_ADAPTS: usize = 2;     // lg(adapt_rate)
 const LG_EPS: usize = 4;        // -lg(eps)
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum AdaptBits {
     None,
     Some {bits: u64, len: usize},

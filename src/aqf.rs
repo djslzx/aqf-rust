@@ -16,6 +16,8 @@ use crate::arcd::{
     to_bits,
     to_letter,
 };
+use std::ops::BitXor;
+use std::fs::Metadata;
 
 #[derive(Debug)]
 struct Block {
@@ -154,13 +156,27 @@ impl AQF {
     /// Generate the shortest extension from the member's hash that doesn't conflict with
     /// the non-member's hash. 
     /// `prev_ext` is the extension previously associated with the member's hash.
-    fn shortest_diff_ext(member_hash: u128, non_member_hash: u128, len: usize) -> (u64, usize) {
-        panic!("unimplemented");
-        // TODO
+    fn shortest_diff_ext(member_hash: u128, non_member_hash: u128) -> AdaptBits {
+        if member_hash == non_member_hash {
+            AdaptBits::None
+        } else {
+            // Find fewest LSBs needed to distinguish member from non-member hash:
+            // Determine number of common LSBs and add 1
+            let len = (member_hash ^ non_member_hash).trailing_zeros() + 1;
+            let bits = member_hash & ((1 << len) - 1);
+            AdaptBits::Some {
+                bits: bits as u64,
+                len: len as usize,
+            }
+        }
     }
     /// Adapt on a false match for a fingerprint at loc
     fn adapt(&mut self, loc: usize, member_hash: u128, non_member_hash: u128, len: usize, mut letters: [u64; 64]) {
-        let (new_ext, new_len) = Self::shortest_diff_ext(member_hash,non_member_hash, len);
+        let (new_ext, new_len) = match Self::shortest_diff_ext(member_hash,non_member_hash) {
+            AdaptBits::None => panic!("Hashes were identical, member_hash={}, non_member_hash={}",
+                                      member_hash, non_member_hash),
+            AdaptBits::Some {bits, len} => (bits, len)
+        };
         let letter = to_letter(&AdaptBits::Some {
             bits: new_ext,
             len: new_len,
@@ -330,6 +346,7 @@ impl Filter<String> for AQF {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cmp::max;
 
     #[test]
     fn test_calc_extension() {
@@ -340,6 +357,30 @@ mod tests {
             assert_eq!(
                 filter.calc_ext(hash, i),
                 ((hash & b128::half_open(start,start+i)) >> start) as u64,
+            );
+        }
+    }
+    #[test]
+    fn test_shortest_diff_ext() {
+        // Identical hashes:
+        assert_eq!(AQF::shortest_diff_ext(0, 0), AdaptBits::None);
+        for i in 1..64 {
+            // h1, h2 only differ at position j
+            let h1 = 0;
+            let h2 = 1 << i;
+            assert_eq!(
+                AQF::shortest_diff_ext(h1, h2),
+                AdaptBits::Some {
+                    bits: 0,
+                    len: i +1,
+                }
+            );
+            assert_eq!(
+                AQF::shortest_diff_ext(h2, h1),
+                AdaptBits::Some {
+                    bits: 1 << i,
+                    len: i +1,
+                }
             );
         }
     }

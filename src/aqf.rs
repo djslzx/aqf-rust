@@ -160,19 +160,34 @@ impl AQF {
         }
     }
     /// Adapt on a false match for a fingerprint at loc
-    fn adapt(&mut self, loc: usize, member_hash: u128, non_member_hash: u128, mut exts: [Ext; 64]) {
+    fn adapt(&mut self, loc: usize, quot: usize, member_hash: u128, non_member_hash: u128, mut exts: [Ext; 64]) {
         let new_ext = self.shortest_diff_ext(member_hash, non_member_hash);
         assert_ne!(new_ext, Ext::None,
                    "Hashes were identical, member_hash={}, non_member_hash={}",
                    member_hash, non_member_hash);
         // Write encoding to the appropriate block
+        let old_ext = exts[loc%64];
         exts[loc%64] = new_ext;
         match ExtensionArcd::encode(exts) {
-            Ok(code) =>
-                self.blocks[loc/64].extensions = code,
+            Ok(code) => {
+                // Update code and add new extension to remote
+                self.blocks[loc/64].extensions = code;
+                self.update_remote_ext(quot, rem, old_ext, new_ext);
+            }
             Err(_) => {
-                // Encoding failed: rebuild (TODO)
-                unimplemented!("Need to rebuild for ext={:?}, exts={:?}", new_ext, exts);
+                // Encoding failed: rebuild
+                // Clear all extensions in the offending block
+                self.rebuild_block(loc/64);
+                // Add new extension back into the remote
+                self.update_remote_ext(quot, rem, old_ext, new_ext);
+                // Write new extension encoding
+                let mut exts = [Ext::None; 64];
+                exts[loc%64] = new_ext;
+                match ExtensionArcd::encode(exts) {
+                    Ok(code) => self.blocks[loc/64].extensions = code,
+                    Err(_) => panic!("Failed to encode after rebuilding block: block={:?}, new_ext={:?}",
+                                     self.blocks[loc/64], new_ext),
+                }
             }
         }
     }
@@ -202,7 +217,7 @@ impl AQF {
                     // but still go through the block we're interested in)
                     if i/64 == block_i {
                         let rem = self.remainder(i);
-                        self.clear_ext_from_remote(q, rem, exts[i%64]);
+                        self.clear_remote_ext(q, rem, exts[i%64]);
                     }
                     // If i reaches the block's start, then exit the outer loop.
                     // If i reaches the start of the run (i=quot or i-1 is a runend),
@@ -221,14 +236,20 @@ impl AQF {
             // q = select(rank(q)+1)
         }
         // Set all block extensions to 0
+        // NOTE: this is hard-coded with the assumption that the arithmetic code
+        // for 64 Ext::None's is 0
         self.blocks[block_i].extensions = 0;
     }
     /// Removes the fingerprint extension from the remote rep
-    fn clear_ext_from_remote(&mut self, quot: usize, rem: Rem, ext: Ext) {
+    fn clear_remote_ext(&mut self, quot: usize, rem: Rem, ext: Ext) {
+        self.update_remote_ext(quot, rem, ext, Ext::None);
+    }
+    /// Updates a fingerprint extension in the remote rep
+    fn update_remote_ext(&mut self, quot: usize, rem: Rem, old_ext: Ext, new_ext: Ext) {
         // Remove previous (quot, rem, ext) triple
-        let val = self.remote.remove(&(quot, rem, ext)).unwrap();
+        let val = self.remote.remove(&(quot, rem, old_ext)).unwrap();
         // Insert new (quot, rem, empty_ext) triple
-        self.remote.insert((quot, rem, Ext::None), val);
+        self.remote.insert((quot, rem, new_ext), val);
     }
     /// Finds the quotient and runend of the last run whose runend is before this block
     fn last_prior_run(&self, block_i: usize) -> usize {
@@ -359,7 +380,7 @@ impl Filter<String> for AQF {
                                 if let Some((word, remote_hash)) = self.remote.get(&(quot, rem, ext)) {
                                     if *word != elt {
                                         // false match => adapt
-                                        self.adapt(loc, *remote_hash, query_hash, exts);
+                                        self.adapt(loc, quot, *remote_hash, query_hash, exts);
                                     }
                                 }
                                 return true;

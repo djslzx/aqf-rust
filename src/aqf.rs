@@ -11,10 +11,9 @@ use crate::rsqf::{
 };
 use crate::arcd::{
     Arcd,
-    selector_arcd::SelectorArcd,
     Ext,
-    to_bits,
-    to_letter,
+    ext_arcd::ExtensionArcd,
+    // selector_arcd::SelectorArcd,
 };
 
 #[derive(Debug)]
@@ -160,29 +159,56 @@ impl AQF {
         }
     }
     /// Adapt on a false match for a fingerprint at loc
-    fn adapt(&mut self, loc: usize, member_hash: u128, non_member_hash: u128, mut letters: [u64; 64]) {
-        let (new_ext, new_len) = match self.shortest_diff_ext(member_hash, non_member_hash) {
-            Ext::None =>
-                panic!("Hashes were identical, member_hash={}, non_member_hash={}",
-                       member_hash, non_member_hash),
-            Ext::Some {bits, len} => (bits, len)
-        };
-        let letter = to_letter(&Ext::Some {
-            bits: new_ext,
-            len: new_len,
-        });
+    fn adapt(&mut self, loc: usize, member_hash: u128, non_member_hash: u128, mut exts: [Ext; 64]) {
+        let new_ext = self.shortest_diff_ext(member_hash, non_member_hash);
+        assert_ne!(new_ext, Ext::None,
+                   "Hashes were identical, member_hash={}, non_member_hash={}",
+                   member_hash, non_member_hash);
         // Write encoding to the appropriate block
-        letters[loc%64] = letter;
-        match SelectorArcd::encode(letters) {
+        exts[loc%64] = new_ext;
+        match ExtensionArcd::encode(exts) {
             Ok(code) =>
                 self.blocks[loc/64].extensions = code,
             Err(_) => {
                 // Encoding failed: rebuild (TODO)
-                panic!("Need to rebuild for letter={}", letter);
+                unimplemented!("Need to rebuild for ext={:?}, exts={:?}", new_ext, exts);
             }
         }
     }
-
+    /// Finds the position of the last runend before this block
+    fn last_prior_runend(&self, block_i: usize) -> usize {
+        let block_start = block_i * 64;
+        let mut q = block_start;
+        loop {
+            match self.rank_select(q) {
+                RankSelectResult::Full(loc) =>
+                // Exit when the end of q's run is at or before the start of the block
+                // or if q is the very first quotient; otherwise, step backwards
+                    if loc <= block_start || q == 0 {
+                        break loc;
+                    } else {
+                        q -= 1;
+                    }
+                RankSelectResult::Empty =>
+                // Exit when the home slot for q is free and q is at or before
+                // the start of the block; otherwise, step backwards
+                    if q <= block_start {
+                        break q;
+                    } else {
+                        q -= 1;
+                    }
+                RankSelectResult::Overflow => panic!("Rebuilding went off the edge"),
+                // We should never hit this case: if we do, that means that we don't
+                // have a 1-1 between occupieds and runends
+            }
+        }
+    }
+    /// Rebuild a block's extensions, determining the block's bounds heuristically.
+    /// This function updates extensions & the remote rep.
+    fn rebuild_block(&mut self, block_i: usize, quot: usize) {
+        // Find the last runend before this block
+        let runend = self.last_prior_runend(block_i);
+    }
     /// Insert a (quot, rem) pair into filter
     fn raw_insert(&mut self, quot: usize, rem: Rem) {
         assert!(quot < self.nslots);
@@ -254,7 +280,7 @@ impl Filter<String> for AQF {
             if let RankSelectResult::Full(mut loc) = self.rank_select(quot) {
                 // Cache decoded letters as (block_i, letters), using block_i
                 // to check whether we need to update letters
-                let mut decode: Option<(usize, [u64; 64])> = None;
+                let mut decode: Option<(usize, [Ext; 64])> = None;
                 loop {
                     // Matching remainder found => compare extensions
                     if self.remainder(loc) == rem {
@@ -266,29 +292,24 @@ impl Filter<String> for AQF {
                             // Otherwise, decode and store result in cache
                             _ => {
                                 let ext = self.blocks[loc/64].extensions;
-                                decode = Some((loc/64, SelectorArcd::decode(ext)));
+                                decode = Some((loc/64, ExtensionArcd::decode(ext)));
                             }
                         }
                         // Check if extensions match:
-                        // We should be able to unwrap w/o error b/c of the previous match
-                        let letters = decode.unwrap().1;
-                        match to_bits(letters[loc%64]) {
+                        // We should be able to unwrap cached decode w/o error b/c of the previous match
+                        let exts = decode.unwrap().1;
+                        match exts[loc/64] {
                             // If extensions exist and don't match, move on
                             Ext::Some {bits, len} if self.calc_ext(query_hash, len) != bits => {}
                             // Otherwise, extension doesn't exist (automatic match) or exists and matches
                             _ => {
                                 // Check remote to see if true match
-                                // TODO: think about only storing the hash in remote and ditching
+                                // NOTE: think about only storing the hash in remote and ditching
                                 // the word (comparing word to elt is potentially slow)
                                 if let Some((word, remote_hash)) = self.remote.get(&(quot, rem)) {
                                     if *word != elt {
                                         // false match => adapt
-                                        self.adapt(
-                                            loc,
-                                            *remote_hash,
-                                            query_hash,
-                                            letters,
-                                        );
+                                        self.adapt(loc, *remote_hash, query_hash, exts);
                                     }
                                 }
                                 return true;

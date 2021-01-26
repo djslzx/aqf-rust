@@ -57,21 +57,27 @@ pub trait RankSelectQuotientFilter {
     // Received methods:
     // Metadata getters/setters
     fn is_occupied(&self, i: usize) -> bool {
+        debug_assert!(i < self.nslots(), "Index out of range: {}/{}", i, self.nslots());
         self.block(i/64).is_occupied(i%64)
     }
     fn set_occupied(&mut self, i: usize, to: bool) {
+        debug_assert!(i < self.nslots(), "Index out of range: {}/{}", i, self.nslots());
         self.mut_block(i/64).set_occupied(i%64, to);
     }
     fn is_runend(&self, i: usize) -> bool {
+        debug_assert!(i < self.nslots(), "Index out of range: {}/{}", i, self.nslots());
         self.block(i/64).is_runend(i%64)
     }
     fn set_runend(&mut self, i: usize, to: bool) {
+        debug_assert!(i < self.nslots(), "Index out of range: {}/{}", i, self.nslots());
         self.mut_block(i/64).set_runend(i%64, to);
     }
     fn remainder(&self, i: usize) -> Rem {
+        debug_assert!(i < self.nslots(), "Index out of range: {}/{}", i, self.nslots());
         self.block(i/64).remainder(i%64)
     }
     fn set_remainder(&mut self, i: usize, to: Rem) {
+        debug_assert!(i < self.nslots(), "Index out of range: {}/{}", i, self.nslots());
         self.mut_block(i/64).set_remainder(i%64, to);
     }
     // Hashing

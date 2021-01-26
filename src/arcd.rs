@@ -9,7 +9,7 @@ const CODE_LEN: usize = 56;     // length of arithmetic code
 const LG_ADAPTS: usize = 2;     // lg(adapt_rate)
 const LG_EPS: usize = 4;        // -lg(eps)
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Ext {
     None,
     Some {bits: u64, len: usize},

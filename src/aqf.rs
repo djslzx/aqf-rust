@@ -122,7 +122,10 @@ impl RankSelectQuotientFilter for AQF {
     fn nslots(&self) -> usize { self.nslots }
     fn nblocks(&self) -> usize { self.nblocks }
     fn seed(&self) -> u32 { self.seed }
-    fn block(&self, i: usize) -> &Block { &self.blocks[i] }
+    fn block(&self, i: usize) -> &Block {
+        debug_assert!(i < self.nblocks, "Block index out of bounds: ({}/{})", i, self.nblocks);
+        &self.blocks[i]
+    }
     fn mut_block(&mut self, i: usize) -> &mut Block { &mut self.blocks[i] }
     fn add_block(&mut self) {
         let b = Block::new();
@@ -160,7 +163,7 @@ impl AQF {
         }
     }
     /// Adapt on a false match for a fingerprint at loc
-    fn adapt(&mut self, loc: usize, quot: usize, member_hash: u128, non_member_hash: u128, mut exts: [Ext; 64]) {
+    fn adapt(&mut self, loc: usize, quot: usize, rem: Rem, member_hash: u128, non_member_hash: u128, mut exts: [Ext; 64]) {
         let new_ext = self.shortest_diff_ext(member_hash, non_member_hash);
         assert_ne!(new_ext, Ext::None,
                    "Hashes were identical, member_hash={}, non_member_hash={}",
@@ -197,20 +200,24 @@ impl AQF {
         // Edit remote representation:
         // Go through all (quot, rem) pairs in this block and shorten their remainders
         let block_start = block_i * 64;
-        // Find the quot of the last runend before this block
+        // Find the quot and runend of the last runend before this block
         let mut q = self.last_prior_run(block_i);
         let exts = ExtensionArcd::decode(self.blocks[block_i].extensions);
 
         // Go through all the runs in this block and clear their extensions in the remote rep
+        // FIXME: not completely sure about this assert
+        let mut runend = 0;
+        debug_assert!(self.is_occupied(q), "q before loop is occupied and computes runend");
         'block: loop {
             if self.is_occupied(q) {
                 // Get the end of the run associated with q
-                let mut i = match self.rank_select(q) {
+                runend = match self.rank_select(q) {
                     RankSelectResult::Full(loc) => loc,
                     RankSelectResult::Empty => panic!("Occupied slot should not be empty"),
                     RankSelectResult::Overflow => panic!("Occupied slot should not go off the edge"),
                 };
                 // Set the extensions in the run to the empty extension
+                let mut i = runend;
                 'run: loop {
                     // Clear ext if in current block
                     // (The run that i is going through might end in the next block
@@ -231,9 +238,14 @@ impl AQF {
                     }
                 }
             }
-            q += 1;
-            // TODO: advance immediately to the next occupied quotient:
-            // q = select(rank(q)+1)
+            // Stop clearing when the previous runend went past the end of the block
+            if runend >= block_start + 64 {
+                break;
+            } else {
+                q += 1;
+                // TODO: advance immediately to the next occupied quotient:
+                // q = select(rank(q)+1)
+            }
         }
         // Set all block extensions to 0
         // NOTE: this is hard-coded with the assumption that the arithmetic code
@@ -380,7 +392,7 @@ impl Filter<String> for AQF {
                                 if let Some((word, remote_hash)) = self.remote.get(&(quot, rem, ext)) {
                                     if *word != elt {
                                         // false match => adapt
-                                        self.adapt(loc, quot, *remote_hash, query_hash, exts);
+                                        self.adapt(loc, quot, rem, *remote_hash, query_hash, exts);
                                     }
                                 }
                                 return true;
@@ -472,7 +484,7 @@ mod tests {
         for i in 0..a {
             let elt = &i.to_string();
             if set.contains(elt) {
-                assert!(filter.query(elt.clone()), "elt={}", elt);
+                assert!(filter.query(elt.clone()), "False negative on elt={}", elt);
             } else {
                 fps += filter.query(elt.clone()) as usize;
             }

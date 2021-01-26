@@ -8,7 +8,7 @@ const LG_ADAPTS: usize = 2;     // lg(adapt_rate)
 const LG_EPS: usize = 4;        // -lg(eps)
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub enum AdaptBits {
+pub enum Ext {
     None,
     Some {bits: u64, len: usize},
 }
@@ -34,12 +34,12 @@ fn floor_log(x: u64) -> u32 {
 /// Converts a letter to adapt bits
 ///   len = floor(log2(letter + 1))
 ///   bits = letter - (2^len - 1)
-pub fn to_bits(letter: u64) -> AdaptBits {
+pub fn to_bits(letter: u64) -> Ext {
     let len = floor_log(letter+1) as usize;
     if len == 0 {
-        AdaptBits::None
+        Ext::None
     } else {
-        AdaptBits::Some {
+        Ext::Some {
             bits: letter - ((1 << len) - 1),
             len: len as usize
         }
@@ -49,10 +49,10 @@ pub fn to_bits(letter: u64) -> AdaptBits {
 /// Converts adaptivity bits to a letter
 ///   letter = 0                   if len=0
 ///          = (2^len - 1) + bits  if len>0
-pub fn to_letter(bits: &AdaptBits) -> u64 {
+pub fn to_letter(bits: &Ext) -> u64 {
     match *bits {
-        AdaptBits::None => 0,
-        AdaptBits::Some {bits, len} => {
+        Ext::None => 0,
+        Ext::Some {bits, len} => {
             assert_ne!(len, 0, "Length-less adaptivity bits should be None");
             ((1 << len)-1) as u64 + bits
         }
@@ -133,27 +133,35 @@ pub mod ext_arcd {
 
     pub struct ExtensionArcd;
 
-    impl Arcd<AdaptBits, u64> for ExtensionArcd {
-        fn encode(input: [AdaptBits; 64]) -> Result<u64, EncodingFailure> {
+    impl Arcd<Ext, u64> for ExtensionArcd {
+        fn encode(input: [Ext; 64]) -> Result<u64, EncodingFailure> {
             let mut low: u64 = 0;
             let mut high: u64 = !0 >> (64 - CODE_LEN);
 
-            for adapt_bits in input.iter() {
+            for ext in input.iter() {
                 let range = high - low;
+                // Multiply range by ~0.90624 (Pr[ext is empty])
                 let mut gap = (range >> 1) + (range >> 2) + (range >> 3) + (range >> 5);
-                match adapt_bits {
-                    AdaptBits::None => {
+                match ext {
+                    Ext::None => {
+                        // If extension is empty, lower top of range
                         high = low + gap;
                     }
-                    AdaptBits::Some {bits, len} => {
+                    Ext::Some {bits, len} => {
+                        // If extension is nonempty, raise bottom of range
                         low += gap;
+                        // Multiply gap by ~0.4687
                         gap = (range >> 5) + (range >> 6);
-                        for _ in 1..*len {
+                        // Account for probability of extension length:
+                        // extension length k>0 has probability 2^{-k};
+                        for _ in 0..(*len-1) {
                             low += gap;
                             gap >>= 1;
                         }
+                        // Account for probability of a particular extension of length k
+                        // (all equally likely -> 1/2^k)
                         gap >>= len;
-                        low += bits * gap;
+                        low += bits * gap; // take bits-th 1/2^k-long piece
                         high = low + gap;
                     }
                 }
@@ -163,39 +171,39 @@ pub mod ext_arcd {
             }
             Ok(low)
         }
-        fn decode(input: u64) -> [AdaptBits; 64] {
+        fn decode(input: u64) -> [Ext; 64] {
             let mut low: u64 = 0;
             let mut high: u64 = !0 >> (64 - CODE_LEN);
-            let mut out = [AdaptBits::None; 64];
+            let mut out = [Ext::None; 64];
 
             for i in 0..64 {
-                let bits;
-                let len;
                 let range = high - low;
+                // Multiply range by ~0.90624 (Pr[ext is empty])
                 let mut gap = (range >> 1) + (range >> 2) + (range >> 3) + (range >> 5);
-                if low + gap > input {
+                out[i] = if low + gap > input {
                     high = low + gap;
-                    len = 0;
-                    bits = 0;
+                    Ext::None
                 } else {
                     low += gap;
+                    // Multiply gap by ~0.4687
                     gap = (range >> 5) + (range >> 6);
-                    let mut l = 1;
+                    // Compute k, the length of the extension, by
+                    // iteratively shrinking the gap in proportion to
+                    // the probability of each length k=1, 2, ...
+                    let mut len = 1;
                     while low + gap <= input {
                         low += gap;
                         gap >>= 1;
-                        l += 1;
+                        len += 1;
                     }
-                    len = l;
-                    gap >>= l;
-                    bits = (input - low)/gap;
-                    low += bits * gap;
-                    high = low + gap;
-                }
-                out[i] = if len == 0 {
-                    AdaptBits::None
-                } else {
-                    AdaptBits::Some {bits, len}
+                    // Get the bits given k, the length of the extension,
+                    // by dividing the interval into 2^k even pieces and
+                    // determining which piece the input belongs to
+                    gap >>= len; // divide gap by 2^k
+                    let bits = (input - low)/gap;
+                    low += bits * gap; // low = low_0 + bits * gap
+                    high = low + gap;  // high = low_0 + (bits+1) * gap
+                    Ext::Some{bits, len}
                 };
             }
             out

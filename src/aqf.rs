@@ -12,7 +12,7 @@ use crate::rsqf::{
 use crate::arcd::{
     Arcd,
     selector_arcd::SelectorArcd,
-    AdaptBits,
+    Ext,
     to_bits,
     to_letter,
 };
@@ -143,17 +143,17 @@ impl AQF {
     /// Generate the shortest extension from the member's hash that doesn't conflict with
     /// the non-member's hash. 
     /// `prev_ext` is the extension previously associated with the member's hash.
-    fn shortest_diff_ext(&self, member_hash: u128, non_member_hash: u128) -> AdaptBits {
+    fn shortest_diff_ext(&self, member_hash: u128, non_member_hash: u128) -> Ext {
         let a = member_hash >> (self.q + self.r);
         let b = non_member_hash >> (self.q + self.r);
         if a == b {
-            AdaptBits::None
+            Ext::None
         } else {
             // Find fewest LSBs needed to distinguish member from non-member hash:
             // Determine number of common LSBs and add 1
             let len = (a ^ b).trailing_zeros() + 1;
             let bits = a & ((1 << len) - 1);
-            AdaptBits::Some {
+            Ext::Some {
                 bits: bits as u64,
                 len: len as usize,
             }
@@ -162,12 +162,12 @@ impl AQF {
     /// Adapt on a false match for a fingerprint at loc
     fn adapt(&mut self, loc: usize, member_hash: u128, non_member_hash: u128, mut letters: [u64; 64]) {
         let (new_ext, new_len) = match self.shortest_diff_ext(member_hash, non_member_hash) {
-            AdaptBits::None =>
+            Ext::None =>
                 panic!("Hashes were identical, member_hash={}, non_member_hash={}",
                        member_hash, non_member_hash),
-            AdaptBits::Some {bits, len} => (bits, len)
+            Ext::Some {bits, len} => (bits, len)
         };
-        let letter = to_letter(&AdaptBits::Some {
+        let letter = to_letter(&Ext::Some {
             bits: new_ext,
             len: new_len,
         });
@@ -274,7 +274,7 @@ impl Filter<String> for AQF {
                         let letters = decode.unwrap().1;
                         match to_bits(letters[loc%64]) {
                             // If extensions exist and don't match, move on
-                            AdaptBits::Some {bits, len} if self.calc_ext(query_hash, len) != bits => {}
+                            Ext::Some {bits, len} if self.calc_ext(query_hash, len) != bits => {}
                             // Otherwise, extension doesn't exist (automatic match) or exists and matches
                             _ => {
                                 // Check remote to see if true match
@@ -336,21 +336,21 @@ mod tests {
     fn test_shortest_diff_ext() {
         // Identical hashes:
         let filter = AQF::new(64, 4);
-        assert_eq!(filter.shortest_diff_ext(0, 0), AdaptBits::None);
+        assert_eq!(filter.shortest_diff_ext(0, 0), Ext::None);
         for i in 1..64 {
             // h1, h2 only differ at position j
             let h1 = 0;
             let h2 = 1 << (i + filter.r + filter.q);
             assert_eq!(
                 filter.shortest_diff_ext(h1, h2),
-                AdaptBits::Some {
+                Ext::Some {
                     bits: 0,
                     len: i+1,
                 }
             );
             assert_eq!(
                 filter.shortest_diff_ext(h2, h1),
-                AdaptBits::Some {
+                Ext::Some {
                     bits: 1 << i,
                     len: i+1,
                 }

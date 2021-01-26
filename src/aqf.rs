@@ -86,7 +86,8 @@ struct AQF {
     seed: u32,
 
     // Remote representation
-    remote: HashMap<(usize, Rem), (String, u128)>,
+    // (quot, rem, ext) -> (elt, hash)
+    remote: HashMap<(usize, Rem, Ext), (String, u128)>,
 }
 
 impl RankSelectQuotientFilter for AQF {
@@ -175,8 +176,62 @@ impl AQF {
             }
         }
     }
-    /// Finds the position of the last runend before this block
-    fn last_prior_runend(&self, block_i: usize) -> usize {
+    /// Rebuild a block's extensions, determining the block's bounds heuristically.
+    /// This function updates extensions & the remote rep.
+    fn rebuild_block(&mut self, block_i: usize) {
+        // Edit remote representation:
+        // Go through all (quot, rem) pairs in this block and shorten their remainders
+        let block_start = block_i * 64;
+        // Find the quot of the last runend before this block
+        let mut q = self.last_prior_run(block_i);
+        let exts = ExtensionArcd::decode(self.blocks[block_i].extensions);
+
+        // Go through all the runs in this block and clear their extensions in the remote rep
+        'block: loop {
+            if self.is_occupied(q) {
+                // Get the end of the run associated with q
+                let mut i = match self.rank_select(q) {
+                    RankSelectResult::Full(loc) => loc,
+                    RankSelectResult::Empty => panic!("Occupied slot should not be empty"),
+                    RankSelectResult::Overflow => panic!("Occupied slot should not go off the edge"),
+                };
+                // Set the extensions in the run to the empty extension
+                'run: loop {
+                    // Clear ext if in current block
+                    // (The run that i is going through might end in the next block
+                    // but still go through the block we're interested in)
+                    if i/64 == block_i {
+                        let rem = self.remainder(i);
+                        self.clear_ext_from_remote(q, rem, exts[i%64]);
+                    }
+                    // If i reaches the block's start, then exit the outer loop.
+                    // If i reaches the start of the run (i=quot or i-1 is a runend),
+                    // then exit the inner loop. Otherwise, walk backwards through the run.
+                    if i <= block_start {
+                        break 'block;
+                    } else if i <= q || self.is_runend(i-1) {
+                        break 'run;
+                    } else {
+                        i -= 1;
+                    }
+                }
+            }
+            q += 1;
+            // TODO: advance immediately to the next occupied quotient:
+            // q = select(rank(q)+1)
+        }
+        // Set all block extensions to 0
+        self.blocks[block_i].extensions = 0;
+    }
+    /// Removes the fingerprint extension from the remote rep
+    fn clear_ext_from_remote(&mut self, quot: usize, rem: Rem, ext: Ext) {
+        // Remove previous (quot, rem, ext) triple
+        let val = self.remote.remove(&(quot, rem, ext)).unwrap();
+        // Insert new (quot, rem, empty_ext) triple
+        self.remote.insert((quot, rem, Ext::None), val);
+    }
+    /// Finds the quotient and runend of the last run whose runend is before this block
+    fn last_prior_run(&self, block_i: usize) -> usize {
         let block_start = block_i * 64;
         let mut q = block_start;
         loop {
@@ -185,7 +240,7 @@ impl AQF {
                 // Exit when the end of q's run is at or before the start of the block
                 // or if q is the very first quotient; otherwise, step backwards
                     if loc <= block_start || q == 0 {
-                        break loc;
+                        break q;
                     } else {
                         q -= 1;
                     }
@@ -202,12 +257,6 @@ impl AQF {
                 // have a 1-1 between occupieds and runends
             }
         }
-    }
-    /// Rebuild a block's extensions, determining the block's bounds heuristically.
-    /// This function updates extensions & the remote rep.
-    fn rebuild_block(&mut self, block_i: usize, quot: usize) {
-        // Find the last runend before this block
-        let runend = self.last_prior_runend(block_i);
     }
     /// Insert a (quot, rem) pair into filter
     fn raw_insert(&mut self, quot: usize, rem: Rem) {
@@ -291,14 +340,15 @@ impl Filter<String> for AQF {
                             Some((block_i, _)) if block_i == loc/64 => {}
                             // Otherwise, decode and store result in cache
                             _ => {
-                                let ext = self.blocks[loc/64].extensions;
-                                decode = Some((loc/64, ExtensionArcd::decode(ext)));
+                                let exts = self.blocks[loc/64].extensions;
+                                decode = Some((loc/64, ExtensionArcd::decode(exts)));
                             }
                         }
                         // Check if extensions match:
                         // We should be able to unwrap cached decode w/o error b/c of the previous match
                         let exts = decode.unwrap().1;
-                        match exts[loc/64] {
+                        let ext = exts[loc/64];
+                        match ext {
                             // If extensions exist and don't match, move on
                             Ext::Some {bits, len} if self.calc_ext(query_hash, len) != bits => {}
                             // Otherwise, extension doesn't exist (automatic match) or exists and matches
@@ -306,7 +356,7 @@ impl Filter<String> for AQF {
                                 // Check remote to see if true match
                                 // NOTE: think about only storing the hash in remote and ditching
                                 // the word (comparing word to elt is potentially slow)
-                                if let Some((word, remote_hash)) = self.remote.get(&(quot, rem)) {
+                                if let Some((word, remote_hash)) = self.remote.get(&(quot, rem, ext)) {
                                     if *word != elt {
                                         // false match => adapt
                                         self.adapt(loc, *remote_hash, query_hash, exts);
@@ -333,7 +383,7 @@ impl Filter<String> for AQF {
         let quot = self.calc_quot(hash);
         let rem = self.calc_rem(hash);
         self.raw_insert(quot, rem);
-        self.remote.insert((quot,rem), (elt, hash));
+        self.remote.insert((quot,rem,Ext::None), (elt, hash));
     }
 }
 

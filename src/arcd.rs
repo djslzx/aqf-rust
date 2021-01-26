@@ -3,14 +3,30 @@
 // Adaptivity bits are represented as an Option<(u64, usize)>
 // where the u64 holds the bits and the usize is the number of bits
 
+use std::fmt;
+
 const CODE_LEN: usize = 56;     // length of arithmetic code
 const LG_ADAPTS: usize = 2;     // lg(adapt_rate)
 const LG_EPS: usize = 4;        // -lg(eps)
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum Ext {
     None,
     Some {bits: u64, len: usize},
+}
+
+/// Debug printing impl for Ext
+impl fmt::Debug for Ext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Ext::None => f.write_str("Ext::None"),
+            Ext::Some {bits, len} =>
+                f.debug_struct("Ext::Some")
+                    .field("bits", &format_args!("0b{:01$b}", bits, len))
+                    .field("len", &len)
+                    .finish()
+        }
+    }
 }
 
 /// Error type for encoding failure

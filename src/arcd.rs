@@ -257,7 +257,8 @@ pub mod ext_arcd {
     #[cfg(test)]
     mod tests {
         use super::*;
-        //use std::cmp::max;
+        use std::num::ParseIntError;
+        use std::collections::LinkedList;
 
         /// Measures the number of bits needed to encode arr
         /*fn range_size(msg: [u64; 64]) -> Result<u64, usize> {
@@ -275,63 +276,34 @@ pub mod ext_arcd {
         }
         */
 
+        /// Convert a test case string into an array of extensions
+        fn str_to_ext_arr(s: &str) -> [Ext; 64] {
+            let mut out = [Ext::None; 64];
+            for (i, str) in s.split('|').enumerate() {
+                out[i] = match str.parse::<u64>() {
+                    Err(ParseIntError) => Ext::None,
+                    Ok(digit) => Ext::Some {
+                        bits: digit,
+                        len: (floor_log(digit) + 1) as usize
+                    }
+                };
+                // print!("[str={}, ext={:?}]", str, out[i]);
+            }
+            // println!();
+            out
+        }
+
         #[test]
         fn test_encode_decode() {
-            /// Each extension separated by '-', so '--' would be an empty slot
+            // '-': empty extension, '|': extension separator
             let inputs = [
-                "---------------------------------------------------------------",
-                "--------------------------------------------------------------0",
-                "----------------------------------------2----------3--------1-----0",
-                "-----------------11---------------3--------------13-----------------",
-                "-----------------------5---------5--------5-----------------------1",
-                "----26-----------------------------------------------------------"
+                "-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-",
+                "-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|0",
+                "-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|2|-|-|-|-|-|-|-|-|3|-|-|-|-|1|-|-|-|-|-|0",
+                "-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|11|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|3|-|-|-|-|-|-|-|-|-|-|13|-|-|-|-|-|-|-|-|-|-|-",
+                "-|-|-|-|-|-|-|-|-|-|-|-|5|-|-|-|-|-|-|-|-|5|-|-|-|-|-|-|-|5|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-",
+                "-|-|-|-|26|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-",
             ];
-
-            /// Convert a test case string into an array of extensions and their length
-            fn str_to_ext_arr(s: &str) -> [Ext; 64] {
-                let mut out = [Ext::Some{bits: 0_u64, len: 0}; 64];
-
-                let mut in_ind = 0;
-                let mut out_ind = 0;
-                let mut buffer: String = "".to_string();
-                // add to buffer until hitting '-', then convert to int, calculate length in binary, and put in out
-                loop {
-                    match s.chars().nth(in_ind) {
-                        Some('-') => {
-                            match buffer.parse::<u64>() {
-                                Ok(d) => out[out_ind] = Ext::Some { bits: d, len: (floor_log(d) + 1) as usize},
-                                Err(_e) => () //Don't need to do anything because it's already 0,0
-                            }
-                            buffer = "".to_string();
-                            // go to next extension in output
-                            out_ind += 1;
-                        },
-                        Some(d) => buffer = format!("{}{}",buffer,d), // some digit
-                        None => { // end of string
-                            match buffer.parse::<u64>() {
-                                Ok(d) => out[out_ind] = Ext::Some { bits: d, len: (floor_log(d) + 1) as usize},
-                                Err(_e) => () //Don't need to do anything because it's already 0,0
-                            }
-                            break;
-                        }
-                    }
-                    // go to next char in input
-                    in_ind += 1;
-                }
-
-                /*
-                /// Print (for checking)
-                for (i, ext) in out.iter().enumerate() {
-                    match ext {
-                        Ext::Some {bits, len} => print!("[{},{}]",bits,len),
-                        Ext::None => print!("x")
-                    }
-                }
-                print!("\n");
-                 */
-
-                out
-            }
 
             // Convert inputs into ext array
             let mut ext_inputs = Vec::with_capacity(inputs.len());
@@ -349,19 +321,19 @@ pub mod ext_arcd {
                             "x={:?}, encode(x)={}, decode(encode(x))={:?}",
                             input, code, decoded,
                         );
+                        println!("x={:?}, encode(x)={}",
+                                 input.iter()
+                                     .filter(|&ext|
+                                         !matches!(*ext, Ext::None)
+                                     )
+                                     .collect::<Vec<&Ext>>(),
+                                 code);
                     },
                     // Encoding fails (out of bits)
                     Err(_) => {
                         // Failed to encode but sequence encoding shouldn't overflow
                         // => error
-                        //if let Ok(size) = range_size(input) {
-                            assert!(
-                                false,
-                                //size <= max(1, (64-CODE_LEN) as u64),
-                                "Ran out of bits!"// (input={:?}, range_size={})",
-                                //input, size
-                            );
-                        //}
+                        unimplemented!();
                     }
                 }
             }

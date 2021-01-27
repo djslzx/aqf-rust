@@ -1,11 +1,8 @@
 use murmur3;
-use rand::{
-    Rng, SeedableRng, rngs::SmallRng,
-};
-use std::{cmp, collections::HashSet};
 use crate::{
     Filter, Rem,
 };
+use std::cmp::{max, min};
 use crate::util::{
     bitarr::{b128, b64},
     bitrank, bitselect, popcnt,
@@ -202,6 +199,34 @@ pub trait RankSelectQuotientFilter {
             }
         }
     }
+    /// Finds the quotient and runend of the last run whose runend is before this block
+    fn last_prior_run(&self, block_i: usize) -> usize {
+        let block_start = block_i * 64;
+        let mut q = block_start;
+        loop {
+            match self.rank_select(q) {
+                RankSelectResult::Full(loc) =>
+                // Exit when the end of q's run is at or before the start of the block
+                // or if q is the very first quotient; otherwise, step backwards
+                    if loc <= block_start || q == 0 {
+                        break q;
+                    } else {
+                        q -= 1;
+                    }
+                RankSelectResult::Empty =>
+                // Exit when the home slot for q is free and q is at or before
+                // the start of the block; otherwise, step backwards
+                    if q <= block_start {
+                        break q;
+                    } else {
+                        q -= 1;
+                    }
+                RankSelectResult::Overflow => panic!("Rebuilding went off the edge"),
+                // We should never hit this case: if we do, that means that we don't
+                // have a 1-1 between occupieds and runends
+            }
+        }
+    }
     /// Shift the remainders and runends in [a,b] forward by 1 into [a+1, b+1]
     fn shift_remainders_and_runends(&mut self, a: usize, b: usize) {
         // TODO: use bit shifts instead of repeatedly masking
@@ -223,7 +248,7 @@ pub trait RankSelectQuotientFilter {
         }
         // Start block_i at the first block after b, clamping it so it doesn't go off the end,
         // and work backwards
-        let mut block_i = cmp::min(b/64 + 1, self.nblocks() - 1);
+        let mut block_i = min(b/64 + 1, self.nblocks() - 1);
         loop {
             // Account for direct/indirect offsets:
             // If direct, b[0] is occupied and target = x + offset
@@ -256,7 +281,7 @@ pub trait RankSelectQuotientFilter {
                 "Parameters out of bounds: quot={}, x={}",
                 quot, loc);
         // Start block_i at the first block after b, clamping it so it doesn't go off the end
-        let mut block_i = cmp::min(loc/64 + 1, self.nblocks() - 1);
+        let mut block_i = min(loc/64 + 1, self.nblocks() - 1);
         // Walk through backwards from the first block after b
         loop {
             if block_i == 0 { break; }
@@ -360,7 +385,7 @@ pub mod rsqf {
         }
         fn new_seeded(n: usize, r: usize, seed: u32) -> RSQF {
             // add extra blocks for overflow
-            let nblocks = cmp::max(1, nearest_pow_of_2(n) / 64);
+            let nblocks = max(1, nearest_pow_of_2(n) / 64);
             let nslots = nblocks * 64;
             let q = (nslots as f64).log2() as usize;
             let mut blocks = Vec::with_capacity(nblocks);
@@ -526,6 +551,10 @@ pub mod rsqf {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use rand::{
+            Rng, SeedableRng, rngs::SmallRng,
+        };
+        use std::collections::HashSet;
 
         fn if_0_inc(x: Rem) -> Rem {
             if x == 0 { 1 } else { x }

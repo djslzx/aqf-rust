@@ -1,7 +1,4 @@
-use std::{cmp, collections::{HashSet, HashMap}};
-use rand::{
-    Rng, SeedableRng, rngs::SmallRng
-};
+use std::{cmp::max, collections::HashMap};
 use crate::{Rem, Filter};
 use crate::util::{bitarr::{b64, b128}, nearest_pow_of_2, };
 use crate::rsqf::{
@@ -97,7 +94,7 @@ impl RankSelectQuotientFilter for AQF {
         Self::new_seeded(n, r, 0)
     }
     fn new_seeded(n: usize, r: usize, seed: u32) -> AQF {
-        let nblocks = cmp::max(1, nearest_pow_of_2(n)/64);
+        let nblocks = max(1, nearest_pow_of_2(n)/64);
         let nslots = nblocks * 64;
         let q = (nslots as f64).log2() as usize;
         let mut blocks = Vec::with_capacity(nblocks);
@@ -263,34 +260,6 @@ impl AQF {
         // Insert new (quot, rem, empty_ext) triple
         self.remote.insert((quot, rem, new_ext), val);
     }
-    /// Finds the quotient and runend of the last run whose runend is before this block
-    fn last_prior_run(&self, block_i: usize) -> usize {
-        let block_start = block_i * 64;
-        let mut q = block_start;
-        loop {
-            match self.rank_select(q) {
-                RankSelectResult::Full(loc) =>
-                // Exit when the end of q's run is at or before the start of the block
-                // or if q is the very first quotient; otherwise, step backwards
-                    if loc <= block_start || q == 0 {
-                        break q;
-                    } else {
-                        q -= 1;
-                    }
-                RankSelectResult::Empty =>
-                // Exit when the home slot for q is free and q is at or before
-                // the start of the block; otherwise, step backwards
-                    if q <= block_start {
-                        break q;
-                    } else {
-                        q -= 1;
-                    }
-                RankSelectResult::Overflow => panic!("Rebuilding went off the edge"),
-                // We should never hit this case: if we do, that means that we don't
-                // have a 1-1 between occupieds and runends
-            }
-        }
-    }
     /// Insert a (quot, rem) pair into filter
     fn raw_insert(&mut self, quot: usize, rem: Rem) {
         assert!(quot < self.nslots);
@@ -423,6 +392,10 @@ impl Filter<String> for AQF {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+    use rand::{
+        Rng, SeedableRng, rngs::SmallRng
+    };
 
     #[test]
     fn test_calc_extension() {

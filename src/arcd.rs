@@ -229,15 +229,13 @@ pub mod ext_arcd {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use std::num::ParseIntError;
-        use std::collections::LinkedList;
 
         /// Convert a test case string into an array of extensions
         fn str_to_ext_arr(s: &str) -> [Ext; 64] {
             let mut out = [Ext::None; 64];
             for (i, str) in s.split('|').enumerate() {
                 out[i] = match str.parse::<u64>() {
-                    Err(ParseIntError) => Ext::None,
+                    Err(_) => Ext::None,
                     Ok(digit) => Ext::Some {
                         bits: digit,
                         len: (floor_log(digit) + 1) as usize
@@ -249,25 +247,9 @@ pub mod ext_arcd {
             out
         }
 
-        #[test]
-        fn test_encode_decode() {
-            // '-': empty extension, '|': extension separator
-            let inputs = [
-                "-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-",
-                "-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|0",
-                "-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|2|-|-|-|-|-|-|-|-|3|-|-|-|-|1|-|-|-|-|-|0",
-                "-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|11|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|3|-|-|-|-|-|-|-|-|-|-|13|-|-|-|-|-|-|-|-|-|-|-",
-                "-|-|-|-|-|-|-|-|-|-|-|-|5|-|-|-|-|-|-|-|-|5|-|-|-|-|-|-|-|5|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-",
-                "-|-|-|-|26|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-",
-            ];
-
-            // Convert inputs into ext array
-            let mut ext_inputs = Vec::with_capacity(inputs.len());
-            for input in inputs.iter() {
-                ext_inputs.push(str_to_ext_arr(input));
-            }
-            // Check for each x in int_inputs that x = decode(encode(x))
-            for input in ext_inputs {
+        // Check for each x in inputs that x = decode(encode(x))
+        fn test_encode_decode_w_inputs(inputs: Vec<[Ext; 64]>) {
+            for input in inputs {
                 match ExtensionArcd::encode(input) {
                     // Encoding succeeds
                     Ok(code) => {
@@ -289,10 +271,42 @@ pub mod ext_arcd {
                     Err(_) => {
                         // Failed to encode but sequence encoding shouldn't overflow
                         // => error
-                        unimplemented!();
+                        panic!("Failed to encode sequence (ran out of bits): {:?}",
+                               input.iter()
+                                   .filter(|&ext|
+                                       !matches!(*ext, Ext::None)
+                                   )
+                                   .collect::<Vec<&Ext>>());
                     }
                 }
             }
+        }
+
+        #[test]
+        fn test_encode_decode() {
+            // '-': empty extension, '|': extension separator
+            let inputs = [
+                "-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-",
+                "-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|0",
+                "-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|2|-|-|-|-|-|-|-|-|3|-|-|-|-|1|-|-|-|-|-|0",
+                "-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|11|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|3|-|-|-|-|-|-|-|-|-|-|13|-|-|-|-|-|-|-|-|-|-|-",
+                "-|-|-|-|-|-|-|-|-|-|-|-|5|-|-|-|-|-|-|-|-|5|-|-|-|-|-|-|-|5|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-",
+                "-|-|-|-|26|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-",
+                "1|1|1|1|1|1|1|1|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-", // passes
+                "1|1|1|1|1|1|1|1|1|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-", // fails
+            ];
+
+            // Convert inputs into ext array
+            let mut ext_inputs = Vec::with_capacity(inputs.len());
+            for input in inputs.iter() {
+                ext_inputs.push(str_to_ext_arr(input));
+            }
+            test_encode_decode_w_inputs(ext_inputs);
+        }
+
+        #[test]
+        fn stress_test_encode_decode() {
+            // TODO: Generate and test codes programmatically
         }
     }
 }

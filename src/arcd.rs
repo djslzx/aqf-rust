@@ -147,34 +147,6 @@ mod tests {
 pub mod ext_arcd {
     use super::*;
 
-    /// Multiply x by (k-1)/k
-    fn mult_k_frac(x: u64, lg_k: usize) -> u64 {
-        let k = 1 << lg_k;
-        // [x/k * (k-1)] + [see if [leftover bits of x] * k-1 / k > 0]
-        (x >> lg_k)*(k-1) + (x & (k-1)) - (x & (k-1) != 0) as u64
-    }
-    /// Multiply x by a-1/a where a is adapt rate
-    fn mult_n_frac(x: u64) -> u64 {
-        mult_k_frac(x, LG_ADAPTS)
-    }
-    /// Multiply x by (eps-1)/eps where eps is error rate
-    fn mult_eps_frac(x: u64) -> u64 {
-        mult_k_frac(x, LG_EPS)
-    }
-    /// Multiply x by Pr[letter], where Pr[letter] is defined as
-    /// Pr[letter] = 7/8                            if letter = 0
-    ///              1/8 * eps^(letter-1) * (1-eps) if letter > 0
-    fn mult_pr(x: u64, letter: u64) -> u64 {
-        if letter == 0 {
-            mult_n_frac(x)
-        } else {
-            // (eps-1)/eps * [(x * 1/8) >> (lg(eps) * (letter-1))]
-            // (eps-1)/eps * [(x * 1/8) >> lg(eps^(letter-1))]
-            // (eps-1)/eps * [(x * 1/8) * eps^(letter-1)]
-            mult_eps_frac(x >> LG_ADAPTS >> (LG_EPS * (letter-1) as usize))
-        }
-    }
-
     pub struct ExtensionArcd;
 
     impl Arcd<Ext, u64> for ExtensionArcd {
@@ -259,22 +231,6 @@ pub mod ext_arcd {
         use super::*;
         use std::num::ParseIntError;
         use std::collections::LinkedList;
-
-        /// Measures the number of bits needed to encode arr
-        /*fn range_size(msg: [u64; 64]) -> Result<u64, usize> {
-            // Get CODE_LEN ones
-            let mut range: u64 = !0 >> (64 - CODE_LEN);
-            // Iteratively reduce the range by scaling it
-            // using the probability of each letter
-            for i in 0..64 {
-                range = mult_pr(range, msg[i]);
-                if range == 0 {
-                    return Err(i);
-                }
-            }
-            Ok(range)
-        }
-        */
 
         /// Convert a test case string into an array of extensions
         fn str_to_ext_arr(s: &str) -> [Ext; 64] {

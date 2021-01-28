@@ -168,7 +168,7 @@ pub fn nearest_pow_of_2(mut v: usize) -> usize {
 // Fast assembly rank and select
 pub fn popcnt(val: u64) -> u64 {
     unsafe {
-        let o: u64;
+        let mut o: u64 = 0;
         asm!("popcnt {0}, {1}",
              out(reg) o,
              in(reg) val,
@@ -188,7 +188,7 @@ pub fn bitrank(val: u64, pos: usize) -> u64 {
         let mask = if mask == 0 { !0 } else { mask-1 };
         let val = val & mask;
         unsafe {
-            let o: u64;
+            let mut o: u64 = 0;
             asm!("popcnt {0}, {1}",
                  out(reg) o,
                  in(reg) val,
@@ -431,7 +431,7 @@ mod tests {
         // One 1
         for i in 0..64 {
             for j in 0..64 {
-                assert_eq!(bitselect(1 << j, i), if i < 1 { j } else { 64 });
+                assert_eq!(bitselect(1 << j, i), if i == 0 { j } else { 64 });
             }
         }
         // Two 1s
@@ -441,9 +441,9 @@ mod tests {
                     let x = (1 << a) | (1 << b);
                     assert_eq!(
                         bitselect(x, i),
-                        if i < 1 {
+                        if i == 0 {
                             a
-                        } else if i < 2 {
+                        } else if i == 1 {
                             b
                         } else {
                             64

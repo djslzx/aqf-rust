@@ -74,78 +74,85 @@ Instead, we have to make do with `rank_select`; that is, we need to figure out t
 ### Scanning forward/backward
 There are two approaches I've thought about:
 
-1. Determine the quotient of the first run that intersects with the block. (This requires scanning backwards through quotients until we find the last one whose runend >= `B.start`.) Then, scan backwards through the remainders in each run and step forward to the next occupied quotient. Repeat until we hit the last quotient whose run intersects the block. (This is roughly what we do in the C code.)
-2. Determine the quotient of the last run that intersects the block. (This also requires scanning backwards through quotients as in case 1.) Then, scan backwards through the remainders in each run and step backward to the previous occupied quotient. Repeat until we hit the first quotient whose run intersects the block.
+1. Determine the quotient of the first run that intersects with the block. (This requires scanning backwards through quotients until we find the last one whose runend >= `B.start`.) Then, walk backwards through the remainders in each run, but step forward to the next occupied quotient when done going through a given run. Repeat until we hit the last quotient whose run intersects the block. (This is roughly what we do in the C code.)
+2. Determine the quotient of the last run that intersects the block. (This requires scanning backwards through quotients until we find the first one whose run doesn't overshoot the end of the block.) Then, walk backwards through the remainders in each run, and when done with a run, step backward to the previous occupied quotient. Repeat until we hit the first quotient whose run intersects the block.
 
 I've chosen to go with the latter approach because it gives us better locality and means that we don't have to do two passes.
 
 ### The algorithm
-1. Find the quotient of the last run that intersects the block. This gives us a quotient, `q`, and `end`, the end of `q`'s run.
-2. Step through each remainder in the run, clearing its extension in the remote representation. Stop when we reach a runend, the start of the block, or `q`.
+1. Find the quotient (`q`) and runend (`end`) of the last run that intersects the block.
+2. Step through each remainder in the run, clearing its extension in the remote representation if the remainder is in the block of interest. Stop when we reach a runend, the start of the block, or `q`.
 3. Use rank and select to jump to the previous occupied quotient and runend. If the new runend is before the start of the block, stop. Otherwise, repeat Step 2 with the new quotient and runend.
 4. Clear all extensions in the block. (This is faster than clearing each extension one by one.)
 
-In pseudocode:
+In pseudocode, where `Q` is the filter, `B` is the block of interest, and `block_i` is the index of the block: 
 ```
 let B = Q.blocks[block_i]
-let q, end = last_intersecting_run(block_i)
+let (q, end) = last_intersecting_run(block_i)
 let i = end
 loop quots:
   loop slots:
-    update remote (q, Q.rem[i], Q.ext[i]) -> (q, Q.rem[i], none)
+    if i < B.start + 64:
+      update remote (q, Q.rem[i], Q.ext[i]) -> (q, Q.rem[i], none)
     if i == B.start:
       break quots
-    else if B.runend(i-1) or i == q:
+    else if i == q or B.runend(i-1):
       break slots
     else:
       i -= 1
-  q, end = prev_pair(q, end)
+  (q, end) = prev_pair(q, end)
 
 clear B.extensions
 ```
 
+### Helper functions
 
 #### `last_intersecting_run(block_i)`
-Start searching for the last intersecting run's quotient at the block's last quotient.  If the block has no quotients, then start at `B.start` or quit depending on whether the block's offset is zero. 
+Determines the quotient and runend for the last run that intersects the `block_i`-th block.
+
+Start searching for the last intersecting run's quotient at `B`'s last quotient.  If `B` has no quotients, then start at `B.start := block_i * 64` or quit depending on whether `B`'s offset is zero. 
 - If the offset is 0 and the block has no quotients, then the block is guaranteed to be empty, so we quit early.
 - If the offset is positive and the block has no quotients, then the last intersecting run belongs to a quotient from a prior block.
+
+If `B` has occupied quotients, then we start at the last occupied quotient. (We can do this by using either `leading_zeros` or `bitselect(B.occs, popcnt(B.occs)-1)`.)
 
 After determining the location from which to start the search, jump backwards through previous (quotient, runend) pairs using rank and select to find the first pair whose runend < `B.start + 63`, and backtrack to the previously encountered (quotient, runend) pair. This is the pair we want.
 
 ```
-// Get start position of search
+// (1) Get start position of search
 let count = popcnt(B.occs)
 if count == 0:
   if B.offset == 0: 
     return None
   else B.offset > 0:
     let q = prev_q(B.start)
-    let end = B.offset - 1
-    return Some(q, end)
-
 else count > 0:
-  let q = select(B.occs, count-1) 
-  // select indexes from 0 - the first item is the 0th
+  let q = highest_set_bit(B.occs) // get last occupied quotient 
+  //      ^ defined below, same as select(B.occs, count-1) in this context
   
-  // Search backwards to find last intersecting run
-  let end = rank_select(q)
-  if end <= B.start + 63:
-    return Some(q, end)
-  else:
-    loop:
-      let last_q = q, last_end = end       // store current (q, end)
-      match prev_pair(q, end, B.start):    // use rank-select
-        Some(new_q, new_end) => 
-          (q, end) = (new_q, new_end)
-        None => return (last_q, last_end)
-      if end < B.start + 63:
-        return Some(last_q, last_end)
+// (2) Search backwards to find last intersecting run
+let end = rank_select(q)
+if end <= B.start + 63:
+  return Some(q, end)
+else:
+  loop:
+    let last_q = q, last_end = end     // store current (q, end)
+    match prev_pair(q, end, B.start):  // prev_pair uses rank-select and 
+                                       // returns None if no valid result found
+      Some(prev_q, prev_end) => 
+        (q, end) = (prev_q, prev_end)
+      None => return (last_q, last_end)
+    if end < B.start + 63:
+      return Some(last_q, last_end)    // This doesn't ensure that the corresponding
+                                       // run overlaps the interval, but because we
+                                       // search backwards, this should be fine
 ```
 
 #### `prev_pair(q, end, bound)`
-Use rank and select to get the previous (quot, runend) pair given (`q`, `end`). As an optimization, exit early (return None) if the previous pair's runend is before `bound` -- in this case, the caller does not need the pair.
+Uses rank and select to get the previous (quot, runend) pair given (`q`, `end`). As an optimization, exits early (returns None) if the previous pair's runend is before `bound`.
 
 ```
+// assumes that q is occupied
 let B_i = end/64
 let B = blocks[B_i]
 let count = bitrank(B.ends, end%64)
@@ -155,28 +162,34 @@ if count == 1:
     B = blocks[B_i]
     if B_i * 64 < bound:
       return None
-    if B.ends != 0: 
+    if B.ends != 0: // i.e., if there are any runends in block B
       break
 
-let new_end = B_i * 64 + highest_set_bit(B.ends)  
+// only bother computing prev_q if prev_end is a valid result
+// TODO: use concurrency to run prev_q in the background at the start
+//       of this function 
+let prev_end = B_i * 64 + highest_set_bit(B.ends)  
 match prev_q(q) {
-  Some(new_q) => return Some(new_q, new_end),
+  Some(prev_q) => return Some(prev_q, prev_end),
   None => panic!
 ```
 
 #### `prev_q(q)`
-Gets the last occupied quotient before `q`, returning `Some(loc)` if one exists and `None` if `q` is the first occupied quotient in the filter.
+Gets the last occupied quotient (`q'`) before `q`, returning `Some(q')` if one exists and `None` if `q` is the first occupied quotient in the filter.
 
 ```
+// assumes that q is occupied
 let block_i = q/64
 let B = blocks[block_i]
-let n = if q%64 > 0 { bitrank(B.occs, q%64-1) } else { 0 }
-if n == 0:
-  while block_i > 0:
-    block_i -= 1
-    B = blocks[block_i]
+let n = bitrank(B.occs, q%64)
+if n == 1: // q is the only occupied quotient in the block 
+  for i in [block_i-1, 0]:
+    B = blocks[i]
     if B.occs != 0:
-      return block_i * 64 + highest_set_bit(B.occs) 
+      return Some(i * 64 + highest_set_bit(B.occs))
+
+// for loop finished w/o finding nonzero occs => no prev quot found
+return None 
 ```
 
 #### `highest_set_bit(bits)`
@@ -187,8 +200,3 @@ fn highest_set_bit(bits: u64) -> usize {
   63 - bits.leading_zeros()
 }
 ```
-
-### Finding the quotients associated with the remainders stored in a block
-Let's consider finding the quotients whose runs intersect the `i`-th block `B` in a filter `Q` where `B.start = i * 64`. Note that `rank_select(x)` is a shorthand for .
-
-Idea: start with the last possible quotient that could point to a remainder in the block and work backwards.

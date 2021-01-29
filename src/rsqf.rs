@@ -206,10 +206,10 @@ pub trait RankSelectQuotientFilter {
         }
     }
     /// Applies f(quot, slot) to all slots in the `block_i`-th block.
-    fn apply_to_block(&mut self, block_i: usize, f: fn(&mut self, usize, usize)) {
-        if let Some((mut q, end)) = self.last_intersecting_run(block_i) {
+    fn apply_to_block<F>(&mut self, block_i: usize, mut f: F)
+        where F: FnMut(&mut Self, usize, usize){
+        if let Some((mut q, mut i)) = self.last_intersecting_run(block_i) {
             let block_start = block_i * 64;
-            let mut i = end;
 
             // Skip forward until we hit the block boundaries
             while i >= block_start + 64 {
@@ -223,7 +223,7 @@ pub trait RankSelectQuotientFilter {
             // Step backwards through each slot and apply f
             'block: loop {
                 'run: loop {
-                    f(&mut self, q, i); // apply f
+                    f(self, q, i); // apply f
                     if i == block_start {
                         break 'block;
                     } else if i == q || self.is_runend(i-1) {
@@ -234,7 +234,7 @@ pub trait RankSelectQuotientFilter {
                 }
                 // Jump backwards to the previous run,
                 // exiting if the runend of the run is in an earlier block
-                match self.prev_pair(q, end, block_i) {
+                match self.prev_pair(q, i, block_i) {
                     Some((prev_q, prev_end)) => {
                         q = prev_q;
                         i = prev_end;
@@ -304,11 +304,14 @@ pub trait RankSelectQuotientFilter {
     /// Exits early and returns `None` if the search goes past `bound`,
     /// a lower bound on block index.
     fn prev_pair(&self, q: usize, end: usize, bound_i: usize) -> Option<(usize, usize)> {
+        debug_assert!(end/64 >= bound_i);
         match self.prev_end(end, bound_i) {
             Some(prev_end) => {
                 match self.prev_quot(q) {
                     Some(prev_quot) => Some((prev_quot, prev_end)),
-                    None => panic!("Found prev_end but failed to find prev_quot"),
+                    None => panic!("Found prev_end but failed to find prev_quot; \
+                                    q={}, end={}, prev_end={}, bound_i={}",
+                                   q, end, prev_end, bound_i),
                 }
             }
             None => None
@@ -699,7 +702,7 @@ pub mod rsqf {
         use rand::{
             Rng, SeedableRng, rngs::SmallRng,
         };
-        use std::collections::HashSet;
+        use std::collections::{HashSet, HashMap};
 
         fn if_0_inc(x: Rem) -> Rem {
             if x == 0 { 1 } else { x }
@@ -1012,6 +1015,49 @@ pub mod rsqf {
                 "block[1]={:#?}\nblock[2]={:#?}",
                 filter.blocks[1], filter.blocks[2],
             );
+        }
+        fn apply_collect_runs(filter: &mut RSQF, block_i: usize) -> HashMap<usize, usize> {
+            // Store mappings of the form (slot -> quot)
+            let mut runs: HashMap<usize, usize> = HashMap::new();
+            let collect_runs = |_: &mut RSQF, quot: usize, rem: usize| {
+                runs.insert(rem, quot);
+            };
+            filter.apply_to_block(block_i, collect_runs);
+            runs
+        }
+        #[test]
+        fn test_apply_to_block() {
+            let mut filter = RSQF::new(64*3, 4);
+            // Run from end of b0 to start of b1 [60: [60, 68]]
+            filter.set_occupied(60, true);
+            filter.set_runend(68, true);
+            filter.blocks[1].offset = 5;
+            // Run in b1 [64: [69,76]]
+            filter.set_occupied(64, true);
+            filter.set_runend(76, true);
+            filter.blocks[1].offset = 12;
+            // Run in b1 [70: [77,110]]
+            filter.set_occupied(70, true);
+            filter.set_runend(110, true);
+            // Run in b1 [90: [111,126]]
+            filter.set_occupied(90, true);
+            filter.set_runend(126, true);
+            // Run in b1 [120: [127,129]]
+            filter.set_occupied(120, true);
+            filter.set_runend(129, true);
+            filter.blocks[2].offset = 2;
+
+            let runs = apply_collect_runs(&mut filter, 1);
+            //println!("runs={:#?}", runs);
+
+            for i in 64..128 {
+                assert_eq!(runs[&i],
+                           if i <= 68 { 60 }
+                           else if i <= 76 { 64 }
+                           else if i <= 110 { 70 }
+                           else if i <= 126 { 90 }
+                           else { 120 });
+            }
         }
         #[test]
         fn test_last_intersecting_run_overshooting() {

@@ -193,61 +193,9 @@ impl AQF {
     }
     /// Rebuild a block's extensions, determining the block's bounds heuristically.
     /// This function updates extensions & the remote rep.
+    #[allow(unused_variables)]
     fn rebuild_block(&mut self, block_i: usize) {
-        // Edit remote representation:
-        // Go through all (quot, rem) pairs in this block and shorten their remainders
-        let block_start = block_i * 64;
-        // Find the quot and runend of the last runend before this block
-        let mut q = self.last_prior_run(block_i);
-        let exts = ExtensionArcd::decode(self.blocks[block_i].extensions);
-
-        // Go through all the runs in this block and clear their extensions in the remote rep
-        // FIXME: not completely sure about this assert
-        let mut runend = 0;
-        debug_assert!(self.is_occupied(q), "q before loop is occupied and computes runend");
-        'block: loop {
-            if self.is_occupied(q) {
-                // Get the end of the run associated with q
-                runend = match self.rank_select(q) {
-                    RankSelectResult::Full(loc) => loc,
-                    RankSelectResult::Empty => panic!("Occupied slot should not be empty"),
-                    RankSelectResult::Overflow => panic!("Occupied slot should not go off the edge"),
-                };
-                // Set the extensions in the run to the empty extension
-                let mut i = runend;
-                'run: loop {
-                    // Clear ext if in current block
-                    // (The run that i is going through might end in the next block
-                    // but still go through the block we're interested in)
-                    if i/64 == block_i {
-                        let rem = self.remainder(i);
-                        self.clear_remote_ext(q, rem, exts[i%64]);
-                    }
-                    // If i reaches the block's start, then exit the outer loop.
-                    // If i reaches the start of the run (i=quot or i-1 is a runend),
-                    // then exit the inner loop. Otherwise, walk backwards through the run.
-                    if i <= block_start {
-                        break 'block;
-                    } else if i <= q || self.is_runend(i-1) {
-                        break 'run;
-                    } else {
-                        i -= 1;
-                    }
-                }
-            }
-            // Stop clearing when the previous runend went past the end of the block
-            if runend >= block_start + 64 {
-                break;
-            } else {
-                q += 1;
-                // TODO: advance immediately to the next occupied quotient:
-                // q = select(rank(q)+1)
-            }
-        }
-        // Set all block extensions to 0
-        // NOTE: this is hard-coded with the assumption that the arithmetic code
-        // for 64 Ext::None's is 0
-        self.blocks[block_i].extensions = 0;
+        unimplemented!();
     }
     /// Removes the fingerprint extension from the remote rep
     fn clear_remote_ext(&mut self, quot: usize, rem: Rem, ext: Ext) {
@@ -359,9 +307,10 @@ impl Filter<String> for AQF {
                                 // NOTE: think about only storing the hash in remote and ditching
                                 // the word (comparing word to elt is potentially slow)
                                 if let Some((word, remote_hash)) = self.remote.get(&(quot, rem, ext)) {
+                                    let hash = *remote_hash; // finish immut borrow before mut borrow for adapt
                                     if *word != elt {
                                         // false match => adapt
-                                        self.adapt(loc, quot, rem, *remote_hash, query_hash, exts);
+                                        self.adapt(loc, quot, rem, hash, query_hash, exts);
                                     }
                                 }
                                 return true;

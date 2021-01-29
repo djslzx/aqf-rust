@@ -975,6 +975,52 @@ pub mod rsqf {
             );
         }
         #[test]
+        fn test_last_intersecting_run_overshooting() {
+            // Multiple runs in block 0 and 1,
+            // but all runs in block i have runends in block i+1
+            let mut filter = RSQF::new(64*3, 4);
+            // (1) Run from block 0 to 1 [10: [10,70]]
+            filter.set_occupied(10, true);
+            filter.set_runend(70, true);
+            filter.blocks[1].offset = 7; // slot after 70
+            // (2) Run from block 0 to 1 [20: [71,80]
+            filter.set_occupied(20, true);
+            filter.set_runend(80, true);
+            filter.blocks[1].offset = 17; // slot after 80
+            // (3) Run from block 0 to block 2 [30:[81,130]]
+            filter.set_occupied(30, true);
+            filter.set_runend(130, true);
+            filter.blocks[1].offset = 67; // slot after 130
+            filter.blocks[2].offset = 3;
+            // (4) Run from block 1 to block 2 [65: [131]]
+            filter.set_occupied(65, true);
+            filter.set_runend(131, true);
+            filter.blocks[2].offset = 4;
+            // (5) Run from block 1 to block 2 [120: [132]]
+            filter.set_occupied(120, true);
+            filter.set_runend(132, true);
+            filter.blocks[2].offset = 5;
+
+            assert_eq!(
+                filter.last_intersecting_run(0),
+                Some((10, 70)),
+                "block[0]={:#?}",
+                filter.blocks[0],
+            );
+            assert_eq!(
+                filter.last_intersecting_run(1),
+                Some((30, 130)),
+                "block[0]={:#?}\nblock[1]={:#?}",
+                filter.blocks[0], filter.blocks[1],
+            );
+            assert_eq!(
+                filter.last_intersecting_run(2),
+                Some((120, 132)),
+                "block[1]={:#?}\nblock[2]={:#?}",
+                filter.blocks[1], filter.blocks[2],
+            );
+        }
+        #[test]
         fn test_multiblock_select_single_block() {
             let mut filter = RSQF::new(64, 4);
             let mut b;

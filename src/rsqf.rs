@@ -92,11 +92,10 @@ pub trait RankSelectQuotientFilter {
     fn calc_rem(&self, hash: u128) -> Rem {
         ((hash & b128::half_open(self.q(), self.q() + self.r())) >> self.q()) as Rem
     }
-    /// Finds the absolute index of the rank-th runend past
-    /// the start of the block_i-th block.
-    /// Note: rank indexes from 0.
-    /// Returns None if no appropriate runend exists.
-    fn multiblock_select(&self, block_i: usize, rank: usize) -> Option<usize> {
+    /// Finds the absolute index of the rank-th 1 bit past the start of B[`block_i`]
+    /// in the metadata bits accessed from a block `b` using `f(b)`.
+    /// Note: `rank` indexes from 0.
+    fn select(&self, block_i: usize, rank: usize, f: fn(&Self::Block) -> u64) -> Option<usize> {
         assert!(block_i < self.nblocks(), "Block index out of bounds");
 
         let mut rank: u64 = rank as u64;
@@ -108,13 +107,13 @@ pub trait RankSelectQuotientFilter {
         // to count seen runends and advance to the correct block
         loop {
             let b = self.block(loc/64);
-            let runends = b.runends();
-            step = bitselect(runends, if rank >= 64 { 63 } else { rank }) as usize;
+            let meta = f(b);
+            step = bitselect(meta, if rank >= 64 { 63 } else { rank }) as usize;
             loc += step;
             if step != 64 || loc >= nslots {
                 break;
             }
-            rank -= popcnt(runends); // account for seen runends
+            rank -= popcnt(meta); // account for seen runends
         }
 
         if loc >= nslots {
@@ -122,6 +121,13 @@ pub trait RankSelectQuotientFilter {
         } else {
             Some(loc)
         }
+    }
+    /// Finds the absolute index of the rank-th runend past
+    /// the start of the block_i-th block.
+    /// Note: rank indexes from 0.
+    /// Returns None if no appropriate runend exists.
+    fn select_runend(&self, block_i: usize, rank: usize) -> Option<usize> {
+        self.select(block_i, rank, |b| b.runends())
     }
     /// Performs the blocked equivalent of the unblocked operation
     ///   y = select(Q.runends, rank(Q.occupieds, x)).
@@ -169,7 +175,7 @@ pub trait RankSelectQuotientFilter {
                 RankSelectResult::Empty
             } else {
                 // (rank-1) accounts for select's indexing from 0
-                match self.multiblock_select(block_i, (rank-1) as usize) {
+                match self.select_runend(block_i, (rank-1) as usize) {
                     Some(loc) =>
                         if loc < x {
                             RankSelectResult::Empty
@@ -882,14 +888,14 @@ pub mod rsqf {
                 b = &mut filter.blocks[0];
                 b.occupieds = 0;
                 b.runends = 0;
-                assert_eq!(filter.multiblock_select(0, 0), None);
+                assert_eq!(filter.select_runend(0, 0), None);
             }
             // Filter with one run
             {
                 b = &mut filter.blocks[0];
                 b.occupieds = 1;
                 b.runends = 1;
-                assert_eq!(filter.multiblock_select(0, 0), Some(0));
+                assert_eq!(filter.select_runend(0, 0), Some(0));
             }
             // Filter with multiple runs
             {
@@ -897,10 +903,10 @@ pub mod rsqf {
                 // First two runs each have two elts, third run has one elt
                 b.occupieds = 0b1101;
                 b.runends  = 0b11010;
-                assert_eq!(filter.multiblock_select(0, 0), Some(1));
-                assert_eq!(filter.multiblock_select(0, 1), Some(3));
-                assert_eq!(filter.multiblock_select(0, 2), Some(4));
-                assert_eq!(filter.multiblock_select(0, 3), None);
+                assert_eq!(filter.select_runend(0, 0), Some(1));
+                assert_eq!(filter.select_runend(0, 1), Some(3));
+                assert_eq!(filter.select_runend(0, 2), Some(4));
+                assert_eq!(filter.select_runend(0, 3), None);
             }
         }
         #[test]
@@ -917,9 +923,9 @@ pub mod rsqf {
                 b1.occupieds = 0;
                 b1.runends = 1;
 
-                assert_eq!(filter.multiblock_select(0, 0), Some(64));
-                assert_eq!(filter.multiblock_select(1, 0), Some(64));
-                assert_eq!(filter.multiblock_select(2, 0), None);
+                assert_eq!(filter.select_runend(0, 0), Some(64));
+                assert_eq!(filter.select_runend(1, 0), Some(64));
+                assert_eq!(filter.select_runend(2, 0), None);
             }
 
             // Filter with two runs:
@@ -934,10 +940,10 @@ pub mod rsqf {
                 b1.runends = 0b11;
                 b1.offset = 1;
 
-                assert_eq!(filter.multiblock_select(0, 0), Some(0));
-                assert_eq!(filter.multiblock_select(0, 1), Some(64));
-                assert_eq!(filter.multiblock_select(1, 0), Some(64));
-                assert_eq!(filter.multiblock_select(1, 1), Some(65));
+                assert_eq!(filter.select_runend(0, 0), Some(0));
+                assert_eq!(filter.select_runend(0, 1), Some(64));
+                assert_eq!(filter.select_runend(1, 0), Some(64));
+                assert_eq!(filter.select_runend(1, 1), Some(65));
             }
         }
         #[test]

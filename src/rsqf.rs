@@ -225,6 +225,12 @@ pub trait RankSelectQuotientFilter {
                 // We should never hit this case: if we do, that means that we don't
                 // have a 1-1 between occupieds and runends
             }
+            // If we never found any blocks with occupied quotients and reached
+            // the start of the filter, then q is the first occupied quotient
+            None
+        } else {
+            // When n > 0, we pick the second-to-last quotient
+            Some(block_i*64 + bitselect(b.occupieds(), n-1) as usize)
         }
     }
     /// Shift the remainders and runends in [a,b] forward by 1 into [a+1, b+1]
@@ -597,6 +603,78 @@ pub mod rsqf {
             assert_eq!(filter.calc_rem(hash), 0b1100, "left={:b}, right={:b}", filter.calc_rem(hash), 0b1100);
             assert_eq!(filter.calc_kth_rem(hash,0), 0b1100);
             assert_eq!(filter.calc_kth_rem(hash,1), 0b1001);
+        }
+        #[test]
+        fn test_prev_q() {
+            // Empty case
+            {
+                let filter = RSQF::new(64*3, 4);
+                for i in 0..filter.nslots {
+                    assert_eq!(filter.prev_q(i), None);
+                }
+            }
+            // Single quotient at i, query with q=j
+            {
+                let nslots = 64*3;
+                for i in 0..nslots {
+                    let mut filter = RSQF::new(nslots, 4);
+                    filter.set_occupied(i, true);
+
+                    for j in 0..nslots {
+                        assert_eq!(
+                            filter.prev_q(j),
+                            if j > i { Some(i) } else { None },
+                            "i={}, j={}",
+                            i, j,
+                        );
+                    }
+                }
+            }
+            // Two quotients at i,j
+            {
+                let nslots = 64*3;
+                for i in 0..nslots {
+                    for j in i..nslots {
+                        let mut filter = RSQF::new(nslots, 4);
+                        filter.set_occupied(i, true);
+                        filter.set_occupied(j, true);
+
+                        assert_eq!(filter.prev_q(i), None,
+                                   "q=i, i={}, j={}", i, j);
+                        assert_eq!(filter.prev_q(j),
+                                   if j > i { Some(i) } else { None },
+                                   "q=j, i={}, j={}", i, j);
+                    }
+                }
+            }
+            // Three quotients at i < j < k
+            {
+                let nslots = 64*3;
+                for i in 0..nslots {
+                    for j in i..nslots {
+                        for k in j..nslots {
+                            let mut filter = RSQF::new(nslots, 4);
+                            filter.set_occupied(i, true);
+                            filter.set_occupied(j, true);
+                            filter.set_occupied(k, true);
+
+                            assert_eq!(filter.prev_q(i), None,
+                                       "q=i, i={}, j={}, k={}",
+                                       i, j, k);
+                            assert_eq!(filter.prev_q(j),
+                                       if j > i { Some(i) } else { None },
+                                       "1=j, i={}, j={}, k={}",
+                                       i, j, k);
+                            assert_eq!(filter.prev_q(k),
+                                       if k > j { Some(j) }
+                                       else if k > i { Some(i) }
+                                       else { None },
+                                       "q=k, i={}, j={}, k={}",
+                                       i, j, k);
+                        }
+                    }
+                }
+            }
         }
         #[test]
         fn test_multiblock_select_single_block() {

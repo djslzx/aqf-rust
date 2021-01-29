@@ -329,7 +329,7 @@ fn _select64(x: u64, k: u64) -> u64 {
 }
 
 /// Returns the position of the rank-th 1 bit in val.
-/// Indexes from 0?
+/// Rank indexes from 0 (the first elt is the 0-th).
 /// Equivalent to tzcnt(pdep(2^rank, val)) when SSE4.2 supported.
 // Adapted from C:
 // uint64_t i = 1ULL << rank;
@@ -341,7 +341,7 @@ fn _select64(x: u64, k: u64) -> u64 {
 //     : [bit] "g" (val)           // g: any registers except those that aren't general registers
 //     : "cc");
 pub fn bitselect(val: u64, rank: u64) -> u64 {
-    assert!(rank < 64, "rank={}", rank);
+    assert!(rank < 64, "rank={} >= 64", rank);
     if is_x86_feature_detected!("sse4.2") {
         let mut i = 1_u64 << rank; // 2^rank
         unsafe {

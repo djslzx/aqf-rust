@@ -199,34 +199,116 @@ pub trait RankSelectQuotientFilter {
             }
         }
     }
-    /// Finds the quotient and runend of the last run whose runend is before this block
-    fn last_prior_run(&self, block_i: usize) -> usize {
+    /// Determines the quotient and runend of the last run to intersect
+    /// the `block_i`-th block.
+    fn last_intersecting_run(&self, block_i: usize) -> Option<(usize, usize)> {
+        let b = self.block(block_i);
         let block_start = block_i * 64;
-        let mut q = block_start;
-        loop {
-            match self.rank_select(q) {
-                RankSelectResult::Full(loc) =>
-                // Exit when the end of q's run is at or before the start of the block
-                // or if q is the very first quotient; otherwise, step backwards
-                    if loc <= block_start || q == 0 {
-                        break q;
-                    } else {
-                        q -= 1;
-                    }
-                RankSelectResult::Empty =>
-                // Exit when the home slot for q is free and q is at or before
-                // the start of the block; otherwise, step backwards
-                    if q <= block_start {
-                        break q;
-                    } else {
-                        q -= 1;
-                    }
-                RankSelectResult::Overflow => panic!("Rebuilding went off the edge"),
-                // We should never hit this case: if we do, that means that we don't
-                // have a 1-1 between occupieds and runends
+        let n = popcnt(b.occupieds());
+        let mut q: usize;
+        if n == 0 {
+            if b.offset() == 0 {
+                return None
+            } else {
+                q = match self.prev_quot(block_start) {
+                    Some(loc) => loc,
+                    None => panic!("Couldn't find previous quotient for a block with nonzero offset"),
+                }
             }
-            // If we never found any blocks with occupied quotients and reached
-            // the start of the filter, then q is the first occupied quotient
+        } else {
+            // n > 0 => get last occupied quotient
+            q = b64::highest_set_bit(b.occupieds());
+        }
+        // Get q's corresponding runend
+        let end = match self.rank_select(q) {
+            RankSelectResult::Full(loc) => loc,
+            _ => panic!("q={} should have a runend", q),
+        };
+        if end <= block_start + 63 {
+            // Exit if the first run we find (the rightmost valid candidate)
+            // is guaranteed to overlap with the block
+            Some((q, end))
+        } else {
+            // Otherwise, work backwards to find the first run whose runend
+            // doesn't exceed the end of the block, then choose the run
+            // after that one
+            let mut last_q;
+            let mut last_end;
+            loop {
+                // Cache current (q, end)
+                last_q = q;
+                last_end = end;
+                // Get previous occupied pair
+                (q, end) = match self.prev_pair(q, end) {
+                    Some((new_q, new_end)) => (new_q, new_end),
+                    // If there is no valid previous pair, then the current one
+                    // is the last intersecting run
+                    None => return Some((last_q, last_end))
+                };
+                // Exit w/ the old run when the new run ends before the end of the block
+                if end < block_start + 63 {
+                    break Some((last_q, last_end))
+                }
+            }
+        }
+    }
+    /// Find the previous occupied quotient and runend pair.
+    /// Exits early and returns `None` if the search goes past `bound`,
+    /// a lower bound on block index.
+    fn prev_pair(&self, q: usize, end: usize, bound_i: usize) -> Option<(usize, usize)> {
+        match self.prev_end(end, bound_i) {
+            Some(prev_end) => {
+                match self.prev_quot(q) {
+                    Some(prev_quot) => Some((prev_quot, prev_end)),
+                    None => panic!("Found prev_end but failed to find prev_quot"),
+                }
+            }
+            None => None
+        }
+    }
+    /// Find the position of the last runend before position `end`,
+    /// returning `None` if no runend can be found in or after the `bound_i`-th block.
+    fn prev_end(&self, end: usize, bound_i: usize) -> Option<usize> {
+        let mut block_i = end/64;
+        debug_assert!(block_i >= bound_i, "block_i={}, bound_i={}", block_i, bound_i);
+        let mut b = self.block(block_i);
+        // Count the number of runends in the block excluding `end`
+        let n = if end%64 == 0 { 0 } else { bitrank(b.runends(), end%64 - 1) };
+        if n == 0 {
+            for i in (bound_i..block_i).rev() {
+                b = self.block(i);
+                // Exit loop if b has any runends
+                if b.runends() != 0 {
+                    // Absolute index of last runend in b
+                    return Some(i*64 + b64::highest_set_bit(b.runends()))
+                }
+            }
+            // Reached bound without finding runends
+            None
+        } else {
+            // When n > 0, we pick the second-to-last runend
+            Some(block_i*64 + bitselect(b.runends(), n-1) as usize)
+        }
+    }
+    /// Find the position of the last occupied quotient before position `q`.
+    /// Returns `None` if `q` is the first occupied quotient.
+    fn prev_quot(&self, q: usize) -> Option<usize> {
+        let block_i = q/64;
+        let mut b = self.block(block_i);
+        // Count the number of occupied quotients excluding q
+        let n = if q%64 == 0 { 0 } else { bitrank(b.occupieds(), q%64 - 1) };
+        if n == 0 {
+            // When there are no other occupied quotients in the block, look through
+            // prior blocks.
+            for i in (0..block_i).rev() {
+                b = self.block(i);
+                // Exit if b has occupied quotients
+                if b.occupieds() != 0 {
+                    // Absolute index of last occupied quotient in b
+                    return Some(i*64 + b64::highest_set_bit(b.occupieds()));
+                }
+            }
+            // Reached filter start without finding quotients
             None
         } else {
             // When n > 0, we pick the second-to-last quotient
@@ -605,24 +687,24 @@ pub mod rsqf {
             assert_eq!(filter.calc_kth_rem(hash,1), 0b1001);
         }
         #[test]
-        fn test_prev_q() {
+        fn test_prev_q_single() {
             // Empty case
             {
-                let filter = RSQF::new(64*3, 4);
+                let filter = RSQF::new(64 * 3, 4);
                 for i in 0..filter.nslots {
-                    assert_eq!(filter.prev_q(i), None);
+                    assert_eq!(filter.prev_quot(i), None);
                 }
             }
             // Single quotient at i, query with q=j
             {
-                let nslots = 64*3;
+                let nslots = 64 * 3;
                 for i in 0..nslots {
                     let mut filter = RSQF::new(nslots, 4);
                     filter.set_occupied(i, true);
 
                     for j in 0..nslots {
                         assert_eq!(
-                            filter.prev_q(j),
+                            filter.prev_quot(j),
                             if j > i { Some(i) } else { None },
                             "i={}, j={}",
                             i, j,
@@ -630,46 +712,160 @@ pub mod rsqf {
                     }
                 }
             }
-            // Two quotients at i,j
-            {
-                let nslots = 64*3;
-                for i in 0..nslots {
-                    for j in i..nslots {
+        }
+        #[test]
+        fn test_prev_q_double() {
+            // Two quotients at i <= j
+            let nslots = 64 * 3;
+            for i in 0..nslots {
+                for j in i..nslots {
+                    let mut filter = RSQF::new(nslots, 4);
+                    filter.set_occupied(i, true);
+                    filter.set_occupied(j, true);
+
+                    assert_eq!(filter.prev_quot(i), None,
+                               "q=i, i={}, j={}", i, j);
+                    assert_eq!(filter.prev_quot(j),
+                               if j > i { Some(i) } else { None },
+                               "q=j, i={}, j={}", i, j);
+                }
+            }
+        }
+        #[test] //expensive test (~1.5s)
+        #[ignore]
+        fn test_prev_q_triple() {
+            // Three quotients at i <= j <= k
+            let nslots = 64*3;
+            for i in 0..nslots {
+                for j in i..nslots {
+                    for k in j..nslots {
                         let mut filter = RSQF::new(nslots, 4);
                         filter.set_occupied(i, true);
                         filter.set_occupied(j, true);
+                        filter.set_occupied(k, true);
 
-                        assert_eq!(filter.prev_q(i), None,
-                                   "q=i, i={}, j={}", i, j);
-                        assert_eq!(filter.prev_q(j),
+                        assert_eq!(filter.prev_quot(i), None,
+                                   "q=i, i={}, j={}, k={}",
+                                   i, j, k);
+                        assert_eq!(filter.prev_quot(j),
                                    if j > i { Some(i) } else { None },
-                                   "q=j, i={}, j={}", i, j);
+                                   "q=j, i={}, j={}, k={}",
+                                   i, j, k);
+                        assert_eq!(filter.prev_quot(k),
+                                   if k > j { Some(j) }
+                                   else if k > i { Some(i) }
+                                   else { None },
+                                   "q=k, i={}, j={}, k={}",
+                                   i, j, k);
                     }
                 }
             }
-            // Three quotients at i < j < k
+        }
+        #[test]
+        fn test_prev_end_single() {
+            // Empty case
+            {
+                let filter = RSQF::new(64 * 3, 4);
+                for i in 0..filter.nslots {
+                    assert_eq!(filter.prev_end(i, 0), None);
+                }
+            }
+            // Single runend at i, query with end=j
+            {
+                let nslots = 64 * 3;
+                for i in 0..nslots {
+                    let mut filter = RSQF::new(nslots, 4);
+                    filter.set_runend(i, true);
+
+                    for j in 0..nslots {
+                        assert_eq!(
+                            filter.prev_end(j, 0),
+                            if j > i { Some(i) } else { None },
+                            "i={}, j={}",
+                            i, j,
+                        );
+                        assert_eq!(
+                            filter.prev_end(j, j / 64),
+                            if j / 64 > i / 64 { None } // j is in a later block, i is before bound
+                            else if j > i { Some(i) } // j is after i but in the same block
+                            else { None }, // j <= i
+                            "i={}, j={}",
+                            i, j,
+                        );
+                    }
+                }
+            }
+        }
+        #[test]
+        fn test_prev_end_double() {
+            // Two runends at i <= j
+            let nslots = 64*3;
+            for i in 0..nslots {
+                for j in i..nslots {
+                    let mut filter = RSQF::new(nslots, 4);
+                    filter.set_runend(i, true);
+                    filter.set_runend(j, true);
+
+                    // i <= j
+                    assert_eq!(filter.prev_end(i, 0),
+                               None,
+                               "end=i, i={}, j={}", i, j);
+                    assert_eq!(filter.prev_end(j, 0),
+                               if j > i { Some(i) } else { None },
+                               "end=j, i={}, j={}", i, j);
+                    assert_eq!(filter.prev_end(i, i/64),
+                               None,
+                               "end=i, i={}, j={}", i, j);
+                    assert_eq!(filter.prev_end(j, j/64),
+                               if j > i && j/64 == i/64 { Some(i) } else { None },
+                               "end=i, i={}, j={}", i, j);
+                }
+            }
+        }
+        #[ignore] //expensive
+        #[test]
+        fn test_prev_end_triple() {
+            // Three quotients at i <= j <= k
             {
                 let nslots = 64*3;
                 for i in 0..nslots {
                     for j in i..nslots {
                         for k in j..nslots {
                             let mut filter = RSQF::new(nslots, 4);
-                            filter.set_occupied(i, true);
-                            filter.set_occupied(j, true);
-                            filter.set_occupied(k, true);
+                            filter.set_runend(i, true);
+                            filter.set_runend(j, true);
+                            filter.set_runend(k, true);
 
-                            assert_eq!(filter.prev_q(i), None,
-                                       "q=i, i={}, j={}, k={}",
+                            //bound_i = 0
+                            assert_eq!(filter.prev_end(i, 0),
+                                       None,
+                                       "end=i, i={}, j={}, k={}",
                                        i, j, k);
-                            assert_eq!(filter.prev_q(j),
+                            assert_eq!(filter.prev_end(j, 0),
                                        if j > i { Some(i) } else { None },
-                                       "1=j, i={}, j={}, k={}",
+                                       "end=j, i={}, j={}, k={}",
                                        i, j, k);
-                            assert_eq!(filter.prev_q(k),
+                            assert_eq!(filter.prev_end(k, 0),
                                        if k > j { Some(j) }
                                        else if k > i { Some(i) }
                                        else { None },
-                                       "q=k, i={}, j={}, k={}",
+                                       "end=k, i={}, j={}, k={}",
+                                       i, j, k);
+
+                            //bound_i = end/64
+                            assert_eq!(filter.prev_end(i, i/64),
+                                       None,
+                                       "end=i, i={}, j={}, k={}",
+                                       i, j, k);
+                            assert_eq!(filter.prev_end(j, j/64),
+                                       if j > i && j/64 == i/64 { Some(i) } else { None },
+                                       "end=j, i={}, j={}, k={}",
+                                       i, j, k);
+                            assert_eq!(filter.prev_end(k, k/64),
+                                       if k > j && k/64 == j/64 { Some(j) }
+                                       else if k > i && k/64 == i/64 { Some(i) }
+                                       else { None },
+                                       "end=k, i={}, j={}, k={}",
                                        i, j, k);
                         }
                     }

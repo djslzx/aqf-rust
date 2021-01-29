@@ -90,7 +90,18 @@ In pseudocode, where `Q` is the filter, `B` is the block of interest, and `block
 let B = Q.blocks[block_i]
 let (q, end) = last_intersecting_run(block_i)
 let i = end
-loop quots:
+// skip backward until we hit the block 
+// TODO: use rank and select?
+while i > block_start + 64:
+  i -= 1
+  if Q.runend(i):
+    q = prev_q(q)
+  // q is a quotient that is in block B or any earlier block.
+  // therefore, if it is not intersecting B, that means that it
+  // must have been pushed over by another run; 
+  // so, if there's no runend between the end of B and q's runend,
+  // then the run for q overlaps with B.
+  loop quots:
   loop slots:
     if i < B.start + 64:
       update remote (q, Q.rem[i], Q.ext[i]) -> (q, Q.rem[i], none)

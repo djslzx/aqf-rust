@@ -219,14 +219,14 @@ pub trait RankSelectQuotientFilter {
                 q = match self.prev_quot(block_start) {
                     Some(loc) => loc,
                     None => panic!("Couldn't find previous quotient for a block with nonzero offset"),
-                }
+                };
             }
         } else {
             // n > 0 => get last occupied quotient
             q = b64::highest_set_bit(b.occupieds());
         }
         // Get q's corresponding runend
-        let end = match self.rank_select(q) {
+        let mut end = match self.rank_select(q) {
             RankSelectResult::Full(loc) => loc,
             _ => panic!("q={} should have a runend", q),
         };
@@ -245,8 +245,11 @@ pub trait RankSelectQuotientFilter {
                 last_q = q;
                 last_end = end;
                 // Get previous occupied pair
-                (q, end) = match self.prev_pair(q, end) {
-                    Some((new_q, new_end)) => (new_q, new_end),
+                match self.prev_pair(q, end, block_i) {
+                    Some((new_q, new_end)) => {
+                        q = new_q;
+                        end = new_end;
+                    }
                     // If there is no valid previous pair, then the current one
                     // is the last intersecting run
                     None => return Some((last_q, last_end))
@@ -275,7 +278,7 @@ pub trait RankSelectQuotientFilter {
     /// Find the position of the last runend before position `end`,
     /// returning `None` if no runend can be found in or after the `bound_i`-th block.
     fn prev_end(&self, end: usize, bound_i: usize) -> Option<usize> {
-        let mut block_i = end/64;
+        let block_i = end/64;
         debug_assert!(block_i >= bound_i, "block_i={}, bound_i={}", block_i, bound_i);
         let mut b = self.block(block_i);
         // Count the number of runends in the block excluding `end`
@@ -406,8 +409,8 @@ pub trait RankSelectQuotientFilter {
 
 pub mod rsqf {
     use super::*;
+    use std::fmt;
 
-    #[derive(Debug)]
     struct Block {
         remainders: [Rem; 64],
         occupieds: u64,
@@ -468,6 +471,15 @@ pub mod rsqf {
         }
         fn inc_offset(&mut self) {
             self.offset += 1;
+        }
+    }
+    impl fmt::Debug for Block {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("Block")
+                .field("remainders", &self.remainders)
+                .field("occupieds", &format_args!("0b{:064b}", self.occupieds))
+                .field("runends", &format_args!("0b{:064b}", self.runends))
+                .field("offset", &self.offset).finish()
         }
     }
 
@@ -877,6 +889,80 @@ pub mod rsqf {
                     }
                 }
             }
+        }
+        #[test]
+        fn test_last_intersecting_run_empty() {
+            // Empty block -> no last intersecting run
+            let filter = RSQF::new(64*3, 4);
+            for i in 0..filter.nblocks {
+                assert_eq!(filter.last_intersecting_run(i), None);
+            }
+        }
+        #[test]
+        fn test_last_intersecting_run_prev() {
+            // Block with an intersecting run from an earlier block
+            for i in 0..64 {
+                let mut filter = RSQF::new(64*3, 4);
+                // run spanning two blocks
+                filter.set_occupied(i, true);
+                filter.set_runend(i+64, true);
+                filter.blocks[0].offset = if i == 0 { 64 } else { 0 };
+                filter.blocks[1].offset = i+1;
+                for j in 0..2 {
+                    assert_eq!(filter.last_intersecting_run(j),
+                               Some((i, i+64)),
+                               "i={}", i);
+                }
+            }
+        }
+        #[test]
+        fn test_last_intersecting_run_prev_spanning() {
+            // Block completely covered by a run from an earlier block
+            for i in 0..64 {
+                let mut filter = RSQF::new(64*3, 4);
+                // run spanning three blocks
+                filter.set_occupied(i, true);
+                filter.set_runend(i+128, true);
+                filter.blocks[0].offset = if i == 0 { 128 } else { 0 };
+                filter.blocks[1].offset = i+64+1;
+                filter.blocks[2].offset = i+1;
+                for j in 0..3 {
+                    assert_eq!(filter.last_intersecting_run(j),
+                               Some((i, i+128)));
+                }
+            }
+        }
+        #[test]
+        fn test_last_intersecting_run_mult_quots() {
+            // 3-block filter, multiple quotients in the middle block.
+            let mut filter = RSQF::new(64*3, 4);
+            // (1) Run in only block 0 [0,32]
+            filter.set_occupied(0, true);
+            filter.set_runend(32, true);
+            filter.blocks[0].offset = 32;
+            // (2) Run between block 0 and block 1 [16,64]
+            filter.set_occupied(16, true);
+            filter.set_runend(64, true);
+            filter.blocks[1].offset = 1; // slot after 64
+            // (3) Run in only block 1 [65, 69]
+            filter.set_occupied(65, true);
+            filter.set_runend(69, true);
+            // (4) Run going from block 1 to 2 [127, 132]
+            filter.set_occupied(127, true);
+            filter.set_runend(132, true);
+            filter.blocks[2].offset = 5; // slot after 132
+            // (5) Run in only block 2 [129, 135]
+            filter.set_occupied(129, true);
+            filter.set_runend(135, true);
+
+            println!("filter={:#?}", filter);
+
+            assert_eq!(filter.last_intersecting_run(0),
+                       Some((16, 64)));
+            assert_eq!(filter.last_intersecting_run(1),
+                       Some((127, 132)));
+            assert_eq!(filter.last_intersecting_run(2),
+                       Some((129, 135)));
         }
         #[test]
         fn test_multiblock_select_single_block() {

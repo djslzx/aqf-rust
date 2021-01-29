@@ -205,6 +205,45 @@ pub trait RankSelectQuotientFilter {
             }
         }
     }
+    /// Applies f(quot, slot) to all slots in the `block_i`-th block.
+    fn apply_to_block(&mut self, block_i: usize, f: fn(&mut self, usize, usize)) {
+        if let Some((mut q, end)) = self.last_intersecting_run(block_i) {
+            let block_start = block_i * 64;
+            let mut i = end;
+
+            // Skip forward until we hit the block boundaries
+            while i >= block_start + 64 {
+                i -= 1;
+                if self.is_runend(i) {
+                    // If we encounter a runend at i < end,
+                    // then there must be another quotient q' < q
+                    q = self.prev_quot(q).unwrap();
+                }
+            }
+            // Step backwards through each slot and apply f
+            'block: loop {
+                'run: loop {
+                    f(&mut self, q, i); // apply f
+                    if i == block_start {
+                        break 'block;
+                    } else if i == q || self.is_runend(i-1) {
+                        break 'run;
+                    } else {
+                        i -= 1;
+                    }
+                }
+                // Jump backwards to the previous run,
+                // exiting if the runend of the run is in an earlier block
+                match self.prev_pair(q, end, block_i) {
+                    Some((prev_q, prev_end)) => {
+                        q = prev_q;
+                        i = prev_end;
+                    }
+                    None => break 'block
+                }
+            }
+        }
+    }
     /// Determines the quotient and runend of the last run to intersect
     /// the `block_i`-th block.
     fn last_intersecting_run(&self, block_i: usize) -> Option<(usize, usize)> {

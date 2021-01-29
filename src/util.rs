@@ -21,6 +21,7 @@ pub mod bitarr {
     // 64-bit bit arrays
     pub mod b64 {
         pub fn get(x: u64, at: usize) -> bool {
+            debug_assert!(at < 64);
             (x & (1 << at)) != 0
         }
         fn set(x: u64, at: usize) -> u64 {
@@ -30,11 +31,16 @@ pub mod bitarr {
             x & !(1 << at)
         }
         pub fn set_to(x: u64, on: bool, at: usize) -> u64 {
+            debug_assert!(at < 64);
             if on {
                 self::set(x, at)
             } else {
                 self::unset(x, at)
             }
+        }
+        pub fn highest_set_bit(x: u64) -> usize {
+            debug_assert_ne!(x, 0);
+            63 - (x.leading_zeros() as usize)
         }
         #[cfg(test)]
         mod tests {
@@ -93,6 +99,20 @@ pub mod bitarr {
                     assert_eq!(set_to(ones, true, i), !0, "i={}", i);
                     assert_eq!(set_to(ones, false, i), !(1 << i), "i={}", i);
                 }
+            }
+            #[test]
+            fn test_highest_set_bit() {
+                // One set bit at i
+                for i in 0..64 {
+                    assert_eq!(highest_set_bit(1 << i), i)
+                }
+                // Two set bits
+                for i in 0..64 {
+                    for j in i+1..64 {
+                        assert_eq!(highest_set_bit((1 << i) | (1 << j)), j)
+                    }
+                }
+
             }
         }
     }
@@ -166,6 +186,7 @@ pub fn nearest_pow_of_2(mut v: usize) -> usize {
 }
 
 // Fast assembly rank and select
+#[allow(unused_assignments)]
 pub fn popcnt(val: u64) -> u64 {
     unsafe {
         let mut o: u64 = 0;
@@ -180,6 +201,7 @@ pub fn popcnt(val: u64) -> u64 {
 
 /// Counts the number of 1 bits in val.
 /// Note: pos indexes from 0.
+#[allow(unused_assignments)]
 pub fn bitrank(val: u64, pos: usize) -> u64 {
     if pos >= 64 {
         popcnt(val)

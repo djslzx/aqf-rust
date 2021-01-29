@@ -223,7 +223,7 @@ pub trait RankSelectQuotientFilter {
             }
         } else {
             // n > 0 => get last occupied quotient
-            q = b64::highest_set_bit(b.occupieds());
+            q = block_start + b64::highest_set_bit(b.occupieds());
         }
         // Get q's corresponding runend
         let mut end = match self.rank_select(q) {
@@ -476,7 +476,7 @@ pub mod rsqf {
     impl fmt::Debug for Block {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             f.debug_struct("Block")
-                .field("remainders", &self.remainders)
+                // .field("remainders", &self.remainders)
                 .field("occupieds", &format_args!("0b{:064b}", self.occupieds))
                 .field("runends", &format_args!("0b{:064b}", self.runends))
                 .field("offset", &self.offset).finish()
@@ -955,14 +955,24 @@ pub mod rsqf {
             filter.set_occupied(129, true);
             filter.set_runend(135, true);
 
-            println!("filter={:#?}", filter);
-
-            assert_eq!(filter.last_intersecting_run(0),
-                       Some((16, 64)));
-            assert_eq!(filter.last_intersecting_run(1),
-                       Some((127, 132)));
-            assert_eq!(filter.last_intersecting_run(2),
-                       Some((129, 135)));
+            assert_eq!(
+                filter.last_intersecting_run(0),
+                Some((16, 64)),
+                "block[0]={:#?}",
+                filter.blocks[0],
+            );
+            assert_eq!(
+                filter.last_intersecting_run(1),
+                Some((127, 132)),
+                "block[0]={:#?}\nblock[1]={:#?}",
+                filter.blocks[0], filter.blocks[1],
+            );
+            assert_eq!(
+                filter.last_intersecting_run(2),
+                Some((129, 135)),
+                "block[1]={:#?}\nblock[2]={:#?}",
+                filter.blocks[1], filter.blocks[2],
+            );
         }
         #[test]
         fn test_multiblock_select_single_block() {

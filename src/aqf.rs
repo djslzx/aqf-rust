@@ -1,6 +1,14 @@
-use std::{cmp::max, collections::HashMap};
+use std::{
+    cmp::max,
+    collections::HashMap,
+    fmt,
+};
 use crate::{Rem, Filter};
-use crate::util::{bitarr::{b64, b128}, nearest_pow_of_2, };
+use crate::util::{
+    bitarr::{b64, b128},
+    join_displayable,
+    nearest_pow_of_2,
+};
 use crate::rsqf::{
     RankSelectBlock,
     RankSelectResult,
@@ -13,7 +21,6 @@ use crate::arcd::{
     // selector_arcd::SelectorArcd,
 };
 
-#[derive(Debug)]
 struct Block {
     remainders: [Rem; 64],
     occupieds: u64,
@@ -61,6 +68,12 @@ impl RankSelectBlock for Block {
     }
     fn inc_offset(&mut self) {
         self.offset += 1;
+    }
+}
+
+impl fmt::Debug for Block {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        RankSelectBlock::fmt(self, f)
     }
 }
 
@@ -160,7 +173,8 @@ impl AQF {
         }
     }
     /// Adapt on a false match for a fingerprint at loc
-    fn adapt(&mut self, loc: usize, quot: usize, rem: Rem, member_hash: u128, non_member_hash: u128, mut exts: [Ext; 64]) {
+    fn adapt(&mut self, loc: usize, quot: usize, rem: Rem,
+             member_hash: u128, non_member_hash: u128, mut exts: [Ext; 64]) {
         let new_ext = self.shortest_diff_ext(member_hash, non_member_hash);
         assert_ne!(new_ext, Ext::None,
                    "Hashes were identical, member_hash={}, non_member_hash={}",
@@ -176,26 +190,36 @@ impl AQF {
             }
             Err(_) => {
                 // Encoding failed: rebuild
-                // Clear all extensions in the offending block
-                self.rebuild_block(loc/64);
-                // Add new extension back into the remote
-                self.update_remote_ext(quot, rem, old_ext, new_ext);
+                // Clear all extensions in the offending block + in remote rep
+                self.clear_block_remote_exts(loc/64);
                 // Write new extension encoding
                 let mut exts = [Ext::None; 64];
                 exts[loc%64] = new_ext;
                 match ExtensionArcd::encode(exts) {
-                    Ok(code) => self.blocks[loc/64].extensions = code,
-                    Err(_) => panic!("Failed to encode after rebuilding block: block={:?}, new_ext={:?}",
-                                     self.blocks[loc/64], new_ext),
+                    Ok(code) => {
+                        self.blocks[loc/64].extensions = code;
+                        // Add new extension back into the remote
+                        self.update_remote_ext(quot, rem, old_ext, new_ext);
+                    }
+                    Err(_) =>
+                        panic!("Failed to encode after rebuilding block: block={:?}, new_ext={:?}",
+                               self.blocks[loc/64], new_ext),
                 }
             }
         }
     }
-    /// Rebuild a block's extensions, determining the block's bounds heuristically.
-    /// This function updates extensions & the remote rep.
+    /// Rebuild a block's extensions in the remote representation.
     #[allow(unused_variables)]
-    fn rebuild_block(&mut self, block_i: usize) {
-        unimplemented!();
+    fn clear_block_remote_exts(&mut self, block_i: usize) {
+        let exts = ExtensionArcd::decode(self.blocks[block_i].extensions);
+        // Clear extensions from remote representation
+        self.apply_to_block(
+            block_i,
+            |filter: &mut Self, quot: usize, i: usize| {
+                let rem = filter.remainder(i);
+                let ext = exts[i%64];
+                filter.clear_remote_ext(quot, rem, ext);
+            });
     }
     /// Removes the fingerprint extension from the remote rep
     fn clear_remote_ext(&mut self, quot: usize, rem: Rem, ext: Ext) {
@@ -333,8 +357,11 @@ impl Filter<String> for AQF {
         let hash = self.hash(&elt[..]);
         let quot = self.calc_quot(hash);
         let rem = self.calc_rem(hash);
-        self.raw_insert(quot, rem);
-        self.remote.insert((quot,rem,Ext::None), (elt, hash));
+        // Don't insert duplicates FIXME
+        if !self.remote.contains_key(&(quot, rem, Ext::None)) {
+            self.raw_insert(quot, rem);
+            self.remote.insert((quot, rem, Ext::None), (elt, hash));
+        }
     }
 }
 
@@ -381,6 +408,61 @@ mod tests {
                     len: i+1,
                 }
             );
+        }
+    }
+    #[test]
+    fn test_clear_block_remote_exts_empty() {
+        // Empty extensions -> no change
+        let mut filter = AQF::new(64*4, 4);
+        for i in 0..filter.nblocks {
+            filter.clear_block_remote_exts(i);
+        }
+        // Check remote rep
+        assert!(filter.remote.is_empty(),
+                "remote is populated by rebuild");
+        // Check extensions
+        for i in 0..filter.nblocks {
+            assert_eq!(filter.blocks[i].extensions, 0,
+                       "block extensions are nonzero after rebuild");
+        }
+    }
+    #[test]
+    fn test_clear_block_remote_exts() {
+        // Insert elts with conflicting hashes raw
+        let nslots = 64*2;
+        let nelts = 10;
+        let mut filter = AQF::new(nslots, 4);
+        for i in 0..nelts {
+            let elt = i.to_string();
+            let hash = filter.hash(&elt);
+            let quot = filter.calc_quot(hash);
+            let rem = filter.calc_rem(hash);
+            filter.raw_insert(quot, rem);
+            filter.remote.insert((quot, rem, Ext::Some{bits: 1, len: 1}), (elt, hash));
+        }
+        // Edit codes
+        for b in filter.blocks.iter_mut() {
+            let mut raw = [Ext::None; 64];
+            for j in 0..64 {
+                raw[j] = if b.is_occupied(j) {
+                    Ext::Some{bits: 1, len: 1}
+                } else {
+                    Ext::None
+                };
+            }
+            let code = match ExtensionArcd::encode(raw) {
+                Ok(code) => code,
+                Err(_) => panic!("Failed to encode extensions={:?}", raw),
+            };
+            b.extensions = code;
+            println!("exts={:?}, code={}", join_displayable(&raw, ""), code);
+        }
+        // Clear and check remote
+        for i in 0..filter.nblocks {
+            filter.clear_block_remote_exts(i);
+        }
+        for (_, _, ext) in filter.remote.keys() {
+            assert_eq!(*ext, Ext::None);
         }
     }
     #[test]

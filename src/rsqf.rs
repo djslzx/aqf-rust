@@ -8,6 +8,7 @@ use crate::util::{
     bitrank, bitselect, popcnt,
     nearest_pow_of_2
 };
+use std::fmt;
 
 /// Abstraction for blocks used in RSQF
 pub trait RankSelectBlock {
@@ -23,6 +24,15 @@ pub trait RankSelectBlock {
     fn set_remainder(&mut self, i: usize, to: Rem);
     fn offset(&self) -> usize;
     fn inc_offset(&mut self);
+
+    // Received methods:
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Block")
+            // .field("remainders", &self.remainders)
+            .field("occupieds", &format_args!("[{:064b}]", self.occupieds().reverse_bits()))
+            .field("runends  ", &format_args!("[{:064b}]", self.runends().reverse_bits()))
+            .field("offset   ", &self.offset()).finish()
+    }
 }
 
 /// The possible results of the rank_select function
@@ -517,11 +527,7 @@ pub mod rsqf {
     }
     impl fmt::Debug for Block {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.debug_struct("Block")
-                // .field("remainders", &self.remainders)
-                .field("occupieds", &format_args!("0b{:064b}", self.occupieds))
-                .field("runends", &format_args!("0b{:064b}", self.runends))
-                .field("offset", &self.offset).finish()
+            RankSelectBlock::fmt(self, f)
         }
     }
 
@@ -1019,8 +1025,8 @@ pub mod rsqf {
         fn apply_collect_runs(filter: &mut RSQF, block_i: usize) -> HashMap<usize, usize> {
             // Store mappings of the form (slot -> quot)
             let mut runs: HashMap<usize, usize> = HashMap::new();
-            let collect_runs = |_: &mut RSQF, quot: usize, rem: usize| {
-                runs.insert(rem, quot);
+            let collect_runs = |_: &mut RSQF, quot: usize, i: usize| {
+                runs.insert(i, quot);
             };
             filter.apply_to_block(block_i, collect_runs);
             runs
@@ -1050,6 +1056,7 @@ pub mod rsqf {
             let runs = apply_collect_runs(&mut filter, 1);
             //println!("runs={:#?}", runs);
 
+            // Check that the expected slot->quot mappings are in place
             for i in 64..128 {
                 assert_eq!(runs[&i],
                            if i <= 68 { 60 }
@@ -1057,6 +1064,13 @@ pub mod rsqf {
                            else if i <= 110 { 70 }
                            else if i <= 126 { 90 }
                            else { 120 });
+            }
+            // Check that f is only applied to slots in the block
+            for i in 0..64 {
+                assert!(!runs.contains_key(&i))
+            }
+            for i in 128..filter.nslots {
+                assert!(!runs.contains_key(&i))
             }
         }
         #[test]

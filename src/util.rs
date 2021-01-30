@@ -16,6 +16,12 @@ macro_rules! hashmap(
      };
 );
 
+pub fn join_displayable<I>(col: I, sep: &str) -> String
+    where I: IntoIterator,
+          I::Item: std::fmt::Display {
+    col.into_iter().map(|x| x.to_string()).collect::<Vec<String>>().join(sep)
+}
+
 // Bit arrays
 pub mod bitarr {
     // 64-bit bit arrays
@@ -175,14 +181,19 @@ pub mod bitarr {
 // Pre: v >= 0
 // https://graphics.stanford.edu/~seander/bithacks.html
 pub fn nearest_pow_of_2(mut v: usize) -> usize {
-    v = v - 1;
-    v |= v >> 1;
-    v |= v >> 2;
-    v |= v >> 4;
-    v |= v >> 8;
-    v |= v >> 16;
-    v |= v >> 32;
-    v + 1
+    if v == 0 {
+        0
+    }
+    else {
+        v = v - 1;
+        v |= v >> 1;
+        v |= v >> 2;
+        v |= v >> 4;
+        v |= v >> 8;
+        v |= v >> 16;
+        v |= v >> 32;
+        v + 1
+    }
 }
 
 // Fast assembly rank and select

@@ -19,7 +19,7 @@ pub enum Ext {
 impl fmt::Debug for Ext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Ext::None => f.write_str("-"),
+            Ext::None => f.write_str(""),
             Ext::Some {bits, len} => f.write_str(&format!("{:01$b}", bits, len)),
         }
     }
@@ -27,7 +27,7 @@ impl fmt::Debug for Ext {
 impl fmt::Display for Ext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Ext::None => f.write_str("-"),
+            Ext::None => f.write_str(""),
             Ext::Some {bits, len} => f.write_str(&format!("{:01$b}", bits, len)),
         }
     }

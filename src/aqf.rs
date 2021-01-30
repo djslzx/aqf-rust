@@ -73,7 +73,15 @@ impl RankSelectBlock for Block {
 
 impl fmt::Debug for Block {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        RankSelectBlock::fmt(self, f)
+        let exts = ExtensionArcd::decode(self.extensions);
+        f.debug_struct("Block")
+            // .field("remainders", &self.remainders)
+            .field("occupieds ", &format_args!("[{:064b}]", self.occupieds().reverse_bits()))
+            .field("runends   ", &format_args!("[{:064b}]", self.runends().reverse_bits()))
+            .field("offset    ", &self.offset())
+            .field("extensions", &join_displayable(&exts, "_"))
+            .field("code      ", &self.extensions)
+            .finish()
     }
 }
 
@@ -463,8 +471,9 @@ mod tests {
                 Err(_) => panic!("Failed to encode extensions={:?}", raw),
             };
             b.extensions = code;
-            println!("exts={:?}, code={}", join_displayable(&raw, ""), code);
+            //println!("exts={:?}, code={}", join_displayable(&raw, ""), code);
         }
+        println!("before clearing remote: filter: {:#?}", filter);
         // Clear and check remote
         for i in 0..filter.nblocks {
             filter.clear_block_remote_exts(i);
@@ -472,6 +481,7 @@ mod tests {
         for (_, _, ext) in filter.remote.keys() {
             assert_eq!(*ext, Ext::None);
         }
+        println!("after clearing remote: filter: {:#?}", filter);
     }
     #[test]
     fn test_insert_and_query() {

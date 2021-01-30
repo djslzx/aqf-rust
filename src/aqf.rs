@@ -174,12 +174,14 @@ impl AQF {
     }
     /// Adapt on a false match for a fingerprint at loc
     fn adapt(&mut self, loc: usize, quot: usize, rem: Rem,
-             member_hash: u128, non_member_hash: u128, mut exts: [Ext; 64]) {
+             member_hash: u128, non_member_hash: u128, exts: [Ext; 64]) {
         let new_ext = self.shortest_diff_ext(member_hash, non_member_hash);
         assert_ne!(new_ext, Ext::None,
                    "Hashes were identical, member_hash={}, non_member_hash={}",
                    member_hash, non_member_hash);
         // Write encoding to the appropriate block
+        let mut exts = exts;
+        //println!("exts={:?}", join_displayable(&exts, ","));
         let old_ext = exts[loc%64];
         exts[loc%64] = new_ext;
         match ExtensionArcd::encode(exts) {
@@ -193,16 +195,17 @@ impl AQF {
                 // Clear all extensions in the offending block + in remote rep
                 self.clear_block_remote_exts(loc/64);
                 // Write new extension encoding
-                let mut exts = [Ext::None; 64];
+                exts = [Ext::None; 64];
                 exts[loc%64] = new_ext;
                 match ExtensionArcd::encode(exts) {
                     Ok(code) => {
                         self.blocks[loc/64].extensions = code;
                         // Add new extension back into the remote
-                        self.update_remote_ext(quot, rem, old_ext, new_ext);
+                        self.update_remote_ext(quot, rem, Ext::None, new_ext);
                     }
                     Err(_) =>
-                        panic!("Failed to encode after rebuilding block: block={:?}, new_ext={:?}",
+                        panic!("Failed to encode after rebuilding block: \
+                                block={:?}, new_ext={:?}",
                                self.blocks[loc/64], new_ext),
                 }
             }
@@ -228,7 +231,12 @@ impl AQF {
     /// Updates a fingerprint extension in the remote rep
     fn update_remote_ext(&mut self, quot: usize, rem: Rem, old_ext: Ext, new_ext: Ext) {
         // Remove previous (quot, rem, ext) triple
-        let val = self.remote.remove(&(quot, rem, old_ext)).unwrap();
+        let val = match self.remote.remove(&(quot, rem, old_ext)) {
+            Some(v) => v,
+            None => panic!("Tried to update a triple that doesn't exist: \
+                            quot={}, rem={}, ext={}, new_ext={}, filter: {:#?}",
+                           quot, rem, old_ext, new_ext, self)
+        };
         // Insert new (quot, rem, empty_ext) triple
         self.remote.insert((quot, rem, new_ext), val);
     }
@@ -321,7 +329,7 @@ impl Filter<String> for AQF {
                         // Check if extensions match:
                         // We should be able to unwrap cached decode w/o error b/c of the previous match
                         let exts = decode.unwrap().1;
-                        let ext = exts[loc/64];
+                        let ext = exts[loc%64];
                         match ext {
                             // If extensions exist and don't match, move on
                             Ext::Some {bits, len} if self.calc_ext(query_hash, len) != bits => {}
@@ -341,8 +349,8 @@ impl Filter<String> for AQF {
                             }
                         }
                     }
-                    // Stop when l < 0, l-1 < quot, or l-1 is a runend
-                    if loc == 0 || loc-1 < quot || self.is_runend(loc-1) {
+                    // Stop when l < 0, l = quot, or l-1 is a runend
+                    if loc == 0 || loc == quot || self.is_runend(loc-1) {
                         return false;
                     } else {
                         loc -= 1;

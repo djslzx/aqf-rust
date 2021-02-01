@@ -3,35 +3,42 @@
 // Adaptivity bits are represented as an Option<(u64, usize)>
 // where the u64 holds the bits and the usize is the number of bits
 
-use std::fmt;
-
 const CODE_LEN: usize = 56;     // length of arithmetic code
 const LG_ADAPTS: usize = 2;     // lg(adapt_rate)
 const LG_EPS: usize = 4;        // -lg(eps)
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Ext {
-    None,
-    Some {bits: u64, len: usize},
-}
+pub mod extensions {
+    use std::fmt;
 
-/// Debug printing impl for Ext
-impl fmt::Debug for Ext {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Ext::None => f.write_str(""),
-            Ext::Some {bits, len} => f.write_str(&format!("{:01$b}", bits, len)),
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum Ext {
+        None,
+        Some {bits: u64, len: usize},
+    }
+
+    /// Debug printing impl for Ext
+    const NONE_STR: &str = "_";
+
+    impl Ext {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match *self {
+                Ext::None => f.write_str(NONE_STR),
+                Ext::Some {bits, len} => f.write_str(&format!("[{:01$b}]", bits, len)),
+            }
+        }
+    }
+    impl fmt::Debug for Ext {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            self.fmt(f)
+        }
+    }
+    impl fmt::Display for Ext {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            self.fmt(f)
         }
     }
 }
-impl fmt::Display for Ext {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Ext::None => f.write_str(""),
-            Ext::Some {bits, len} => f.write_str(&format!("{:01$b}", bits, len)),
-        }
-    }
-}
+use extensions::*;
 
 /// Error type for encoding failure
 #[derive(Debug, Clone)]

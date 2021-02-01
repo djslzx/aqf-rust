@@ -28,7 +28,7 @@ pub trait RankSelectBlock {
     // Received methods:
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Block")
-            // .field("remainders", &self.remainders)
+            .field("remainders", &(0..64).map(|x| self.remainder(x)))
             .field("occupieds", &format_args!("[{:064b}]", self.occupieds().reverse_bits()))
             .field("runends  ", &format_args!("[{:064b}]", self.runends().reverse_bits()))
             .field("offset   ", &self.offset()).finish()
@@ -1789,7 +1789,7 @@ pub mod rsqf {
         #[test]
         fn test_insert_and_query() {
             // Insert and query elts, ensure that there are no false negatives
-            let a: usize = 1 << 14; // use set size 2^14
+            let a: usize = 1 << 20;
             let ratio = 100.0;      // a/s
             let s = nearest_pow_of_2((a as f64/ratio) as usize);
             let s = ((s as f64) * 0.95) as usize;

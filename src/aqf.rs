@@ -16,7 +16,7 @@ use crate::rsqf::{
 };
 use crate::arcd::{
     Arcd,
-    Ext,
+    extensions::Ext,
     ext_arcd::ExtensionArcd,
     // selector_arcd::SelectorArcd,
 };
@@ -74,12 +74,18 @@ impl RankSelectBlock for Block {
 impl fmt::Debug for Block {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let exts = ExtensionArcd::decode(self.extensions);
+        let rems = (0..64)
+            .map(|x| format!("0x{:x}", self.remainder(x)))
+            .collect::<Vec<String>>()
+            .chunks(8)
+            .map(|c| c.join(" "))
+            .collect::<Vec<String>>();
         f.debug_struct("Block")
-            // .field("remainders", &self.remainders)
+            .field("remainders", &rems)
             .field("occupieds ", &format_args!("[{:064b}]", self.occupieds().reverse_bits()))
             .field("runends   ", &format_args!("[{:064b}]", self.runends().reverse_bits()))
             .field("offset    ", &self.offset())
-            .field("extensions", &join_displayable(&exts, "_"))
+            .field("extensions", &join_displayable(&exts, ""))
             .field("code      ", &self.extensions)
             .finish()
     }

@@ -16,14 +16,14 @@ pub mod extensions {
         Some {bits: u64, len: usize},
     }
 
-    /// Debug printing impl for Ext
+    /// Character to use when printing Ext::None
     const NONE_STR: &str = "_";
 
     impl Ext {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match *self {
                 Ext::None => f.write_str(NONE_STR),
-                Ext::Some {bits, len} => f.write_str(&format!("[{:01$b}]", bits, len)),
+                Ext::Some { bits, len } => f.write_str(&format!("[{:01$b}]", bits, len)),
             }
         }
     }

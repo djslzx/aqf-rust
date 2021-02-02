@@ -6,7 +6,7 @@ use std::{
 use crate::{Rem, Filter};
 use crate::util::{
     bitarr::{b64, b128},
-    join_displayable,
+    join_debug,
     nearest_pow_of_2,
 };
 use crate::rsqf::{
@@ -85,7 +85,7 @@ impl fmt::Debug for Block {
             .field("occupieds ", &format_args!("[{:064b}]", self.occupieds().reverse_bits()))
             .field("runends   ", &format_args!("[{:064b}]", self.runends().reverse_bits()))
             .field("offset    ", &self.offset())
-            .field("extensions", &join_displayable(&exts, ""))
+            .field("extensions", &join_debug(&exts, ""))
             .field("code      ", &self.extensions)
             .finish()
     }
@@ -162,10 +162,11 @@ impl RankSelectQuotientFilter for AQF {
 impl AQF {
     fn calc_ext(&self, hash: u128, k: usize) -> u64 {
         debug_assert_ne!(k, 0);
-        let a = self.q + self.r;
-        let b = a + k;
-        assert!(b <= 64, "Extension overflowed 64 bits, b={}", b);
-        ((hash & b128::half_open(a, b)) >> a) as u64
+        debug_assert!(self.q + self.r + k <= 64,
+                      "Extension overflowed 64 bits at {}",
+                      self.q + self.r + k <= 64);
+        let hash = hash >> (self.q + self.r);
+        (hash & b128::half_open(0, k)) as u64
     }
     /// Generate the shortest extension from the member's hash that doesn't conflict with
     /// the non-member's hash. 
@@ -243,6 +244,7 @@ impl AQF {
         self.update_remote_ext(quot, rem, ext, Ext::None);
     }
     /// Updates a fingerprint extension in the remote rep
+    // FIXME: take full mapping
     fn update_remote_ext(&mut self, quot: usize, rem: Rem, old_ext: Ext, new_ext: Ext) {
         // Remove previous (quot, rem, ext) triple
         let val = match self.remote.remove(&(quot, rem, old_ext)) {
@@ -487,12 +489,54 @@ mod tests {
         for (_, _, ext) in filter.remote.keys() {
             assert_eq!(*ext, Ext::None);
         }
-        println!("after clearing remote: filter: {:#?}", filter);
+        //println!("after clearing remote: filter: {:#?}", filter);
+    }
+    #[test]
+    fn test_repeated_quot_rem() {
+        // Check that elts with the same (quot, rem) are in the filter
+
+        /// Use filter's hash fn but set quotient bits to 0, remainder bits to 0xf
+        fn hash_trunc(filter: &AQF, elt: &str) -> u128 {
+            (filter.hash(elt) << (filter.r + filter.q)) +
+                (((1<<filter.r)-1) << filter.q)
+        }
+
+        // Try inserting multiple elts that have the same quot, rem
+        let nslots = 64;
+        let nelts = 10;
+        let mut filter = AQF::new(nslots, 4);
+        let mut exts = [Ext::None; 64];
+        for i in 0..nelts {
+            let elt = i.to_string();
+            // Set up hash so quotient and remainder are the same for all elts:
+            // quot = 0, rem = 0xf = 0b1111
+            let hash = hash_trunc(&filter, &elt[..]);
+            let quot = filter.calc_quot(hash);
+            let rem = filter.calc_rem(hash);
+            let ext = if i % 2 == 0 {
+                Ext::Some{bits: 1, len: 1}
+            } else {
+                Ext::None
+            };
+            exts[i%64] = ext;
+            let code = ExtensionArcd::encode(exts).unwrap();
+            filter.raw_insert(quot, rem);
+            filter.remote.insert((quot, rem, ext), (elt, hash));
+            filter.blocks[i/64].extensions = code;
+        }
+        println!("filter: {:#?}", filter);
+        for i in 0..nelts {
+            let elt = i.to_string();
+            // Check that the filter contains elts
+            assert!(filter.raw_query(hash_trunc(&filter, &elt[..]),
+                                     &elt[..]),
+                    "Filter doesn't contain elt {}", elt);
+        }
     }
     #[test]
     fn test_insert_and_query() {
         // Insert and query elts, ensure that there are no false negatives
-        let a: usize = 1 << 14; // use set size 2^14
+        let a: usize = 1 << 17; // use set size 2^14
         let ratio = 100.0;      // a/s
         let s = nearest_pow_of_2((a as f64/ratio) as usize);
         let s = ((s as f64) * 0.95) as usize;

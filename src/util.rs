@@ -16,10 +16,14 @@ macro_rules! hashmap(
      };
 );
 
-pub fn join_displayable<I>(col: I, sep: &str) -> String
+pub fn join_debug<I>(collection: I, sep: &str) -> String
     where I: IntoIterator,
-          I::Item: std::fmt::Display {
-    col.into_iter().map(|x| x.to_string()).collect::<Vec<String>>().join(sep)
+          I::Item: std::fmt::Debug {
+    collection
+        .into_iter()
+        .map(|x| format!("{:#?}", x))
+        .collect::<Vec<String>>()
+        .join(sep)
 }
 
 // Bit arrays

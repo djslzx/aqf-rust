@@ -215,9 +215,31 @@ pub trait RankSelectQuotientFilter {
             }
         }
     }
-    /// Applies f(quot, slot) to all slots in the `block_i`-th block.
+    fn apply_to_run_with_start<F>(&mut self, quot: usize, loc: usize, mut f: F)
+        where F: FnMut(&mut Self, usize) {
+        let mut i = loc;
+        loop {
+            f(self, i);
+            if i == 0 || i == quot || self.is_runend(i-1) {
+                break;
+            } else {
+                i -= 1;
+            }
+        }
+    }
+    /// Applies `f(quot, pos)` to all slots in the run associated with `quot`.
+    /// TODO: turn into a macro?
+    fn apply_to_run<F>(&mut self, quot: usize, f: F)
+        where F: FnMut(&mut Self, usize) {
+        if self.is_occupied(quot) {
+            if let RankSelectResult::Full(loc) = self.rank_select(quot) {
+                self.apply_to_run_with_start(quot, loc, f);
+            }
+        }
+    }
+    /// Applies `f(quot, pos)` to all slots in the `block_i`-th block.
     fn apply_to_block<F>(&mut self, block_i: usize, mut f: F)
-        where F: FnMut(&mut Self, usize, usize){
+        where F: FnMut(&mut Self, usize, usize) {
         if let Some((mut q, mut i)) = self.last_intersecting_run(block_i) {
             let block_start = block_i * 64;
 

@@ -455,29 +455,24 @@ impl AQF {
             if let RankSelectResult::Full(mut loc) = self.rank_select(quot) {
                 // Cache decoded letters as (block_i, letters), using block_i
                 // to check whether we need to update letters
-                //let mut decode: Option<(usize, [Ext; 64])> = None;
+                let mut decode: Option<(usize, [Ext; 64])> = None;
                 loop {
                     // Matching remainder found => compare extensions
                     if self.remainder(loc) == rem {
                         // // Check cached code:
-                        // match decode {
-                        //     // If cached block index is the same as the current index,
-                        //     // leave cache as is
-                        //     Some((block_i, _)) if block_i == loc/64 => {
-                        //         if print { println!("reusing cached code for i={}", block_i); }
-                        //     }
-                        //     // Otherwise, decode and store result in cache
-                        //     _ => {
-                        //         let exts = self.blocks[loc/64].extensions;
-                        //         if print { println!("overwriting cached code, old={:#?}, new=(i={}, exts={:#?})",
-                        //                             decode, loc/64,
-                        //                             join_displayable(&ExtensionArcd::decode(exts), "_")); }
-                        //         decode = Some((loc/64, ExtensionArcd::decode(exts)));
-                        //     }
-                        // }
+                        match decode {
+                            // If cached block index is the same as the current index,
+                            // leave cache as is
+                            Some((block_i, _)) if block_i == loc/64 => {}
+                            // Otherwise, decode and store result in cache
+                            _ => {
+                                let exts = self.blocks[loc/64].extensions;
+                                decode = Some((loc/64, ExtensionArcd::decode(exts)));
+                            }
+                        }
                         // Check if extensions match:
                         // We should be able to unwrap cached decode w/o error b/c of the previous match
-                        let exts = ExtensionArcd::decode(self.blocks[loc/64].extensions);
+                        let exts = decode.unwrap().1;
                         let ext = exts[loc%64];
                         if self.ext_matches(ext, query_hash) {
                             // Extensions match => check remote to see if true match

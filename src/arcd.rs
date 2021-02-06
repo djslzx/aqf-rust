@@ -23,7 +23,7 @@ pub mod extensions {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match *self {
                 Ext::None => f.write_str(NONE_STR),
-                Ext::Some { bits, len } => f.write_str(&format!("[{:01$b}]", bits, len)),
+                Ext::Some { bits, len } => f.write_str(&format!("{:01$b}", bits, len)),
             }
         }
     }
@@ -86,22 +86,6 @@ pub fn to_letter(bits: &Ext) -> u64 {
     }
 }
 
-fn slow_factorial(x: u64) -> u64 {
-    let mut out = 1;
-    for i in 2..=x {
-        out *= i;
-    }
-    out
-}
-/// Multiply x by Pr[k]
-/// Pr[k] = 1/(2^k * k!e)
-// FIXME: probability function is incorrect
-fn mult_pr(x: u64, k: usize) -> u64 {
-    let k_factorial = slow_factorial(k as u64) as f64;
-    (((x >> k) >> LG_EPS) as f64/k_factorial) as u64
-    // FIXME: slow b/c of factorial
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,14 +100,6 @@ mod tests {
         }
     }
     #[test]
-    fn test_factorial() {
-        let mut x = 1;
-        for i in 0..20 {
-            x = if i == 0 { 1 } else { x * i };
-            assert_eq!(slow_factorial(i), x);
-        }
-    }
-    #[test]
     fn test_conversions() {
         for i in 0..1000 {
             let bits = to_bits(i);
@@ -131,25 +107,6 @@ mod tests {
             assert_eq!(i, letter,
                        "l={} -> bits={:?} -> l={}",
                        i, bits, letter);
-        }
-    }
-    //FIXME: probability function is incorrect
-    #[test]
-    fn test_mult_pr() {
-        fn slow_mult_pr(x: u64, k: usize) -> u64 {
-            let epsilon = (1 << LG_EPS) as f64;
-            ((x as f64)/(2_u64.pow(k as u32) as f64
-                * slow_factorial(k as u64) as f64
-                * epsilon)) as u64
-        }
-        for i in 0..100 {
-            for j in 0..10 {
-                let fast = mult_pr(i, j);
-                let slow = slow_mult_pr(i, j);
-                assert_eq!(fast, slow,
-                           "i={}, j={}, fast={}, slow={}",
-                           i, j, fast, slow);
-            }
         }
     }
 }

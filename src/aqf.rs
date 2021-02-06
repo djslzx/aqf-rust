@@ -6,7 +6,6 @@ use std::{
 use crate::{Rem, Filter};
 use crate::util::{
     bitarr::{b64, b128},
-    join_debug,
     nearest_pow_of_2,
 };
 use crate::rsqf::{
@@ -73,7 +72,17 @@ impl RankSelectBlock for Block {
 
 impl fmt::Debug for Block {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let exts = ExtensionArcd::decode(self.extensions);
+        let decoded = ExtensionArcd::decode(self.extensions);
+        let exts = decoded
+            .iter()
+            .enumerate()
+            .filter_map(|(i, ext)|
+                match ext {
+                    Ext::Some{bits, len} => Some(format!("{a}: {b:0c$b}", a=i, b=bits, c=len)),
+                    Ext::None => None
+                })
+            .collect::<Vec<String>>()
+            .join(", ");
         let rems = (0..64)
             .map(|x| format!("0x{:x}", self.remainder(x)))
             .collect::<Vec<String>>()
@@ -85,7 +94,7 @@ impl fmt::Debug for Block {
             .field("occupieds ", &format_args!("[{:064b}]", self.occupieds().reverse_bits()))
             .field("runends   ", &format_args!("[{:064b}]", self.runends().reverse_bits()))
             .field("offset    ", &self.offset())
-            .field("extensions", &join_debug(&exts, ""))
+            .field("extensions", &format_args!("{}", &exts))
             .field("code      ", &self.extensions)
             .finish()
     }
@@ -106,12 +115,12 @@ mod remote {
     impl fmt::Debug for Remote<String> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             f.debug_map()
-                .entries(self.data.iter().map(|(&(q, r), vec)| {
-                    (format!("{}, {}", q, r),
-                     vec.iter()
-                         .map(|(e, s, h)| format!("{}, {}, {}", e, s, h))
-                         .collect::<Vec<String>>())
-                }))
+                .entries(self.data.iter().map(|(&(q, r), vec)| {(
+                    format!("{}, {}", q, r),
+                    vec.iter()
+                        .map(|(e, s, h)| format!("{}, {}, {}", e, s, h))
+                        .collect::<Vec<String>>()
+                )}))
                 .finish()
         }
     }
@@ -296,7 +305,7 @@ impl AQF {
             if self.remainder(i) == query_rem && self.ext_matches(block_exts[i%64], query_hash) {
                 // If we get a match, adapt on the current (elt, hash) pair
                 // and advance to the next elt, hash pair
-                self.adapt_loc(i, query_quot, query_rem, hash, query_hash, block_exts);
+                self.adapt_loc(i, query_quot, query_rem, hash, query_hash, &mut block_exts);
                 if let Some((_, remote_hash)) = pairs.next() {
                     hash = *remote_hash;
                 } else {
@@ -311,21 +320,20 @@ impl AQF {
             i -= 1;
             // Update decoded block_exts if we enter a new block
             if i % 64 == 63 {
-                block_exts = ExtensionArcd::decode(self.blocks[i%64].extensions);
+                block_exts = ExtensionArcd::decode(self.blocks[i/64].extensions);
             }
         }
     }
     /// Adapt on a false match for a fingerprint at loc
-    fn adapt_loc(&mut self, loc: usize, quot: usize, rem: Rem, member_hash: u128, non_member_hash: u128, block_exts: [Ext; 64]) {
+    fn adapt_loc(&mut self, loc: usize, quot: usize, rem: Rem, member_hash: u128, non_member_hash: u128, exts: &mut [Ext; 64]) {
         let new_ext = self.shortest_diff_ext(member_hash, non_member_hash);
         assert_ne!(new_ext, Ext::None,
                    "Hashes were identical, member_hash={}, non_member_hash={}",
                    member_hash, non_member_hash);
         // Write encoding to the appropriate block
-        let mut exts = block_exts;
         let old_ext = exts[loc%64];
         exts[loc%64] = new_ext;
-        match ExtensionArcd::encode(exts) {
+        match ExtensionArcd::encode(*exts) {
             Ok(code) => {
                 // Update code and add new extension to remote
                 self.blocks[loc/64].extensions = code;
@@ -336,9 +344,9 @@ impl AQF {
                 // Clear all extensions in the offending block + in remote rep
                 self.clear_block_remote_exts(loc/64);
                 // Write new extension encoding
-                exts = [Ext::None; 64];
+                *exts = [Ext::None; 64];
                 exts[loc%64] = new_ext;
-                match ExtensionArcd::encode(exts) {
+                match ExtensionArcd::encode(*exts) {
                     Ok(code) => {
                         self.blocks[loc/64].extensions = code;
                         // Add new extension back into the remote
@@ -441,12 +449,7 @@ impl AQF {
         let quot = self.calc_quot(query_hash);
         let rem = self.calc_rem(query_hash);
 
-        let print = true;
-        if print { println!("querying elt={}, quot={}, rem={}, block={:#?}",
-                            elt, quot, rem, self.blocks[quot/64]); }
-
         if !self.is_occupied(quot) {
-            println!("quot ({}) is unoccupied, exiting", quot);
             false
         } else {
             if let RankSelectResult::Full(mut loc) = self.rank_select(quot) {
@@ -455,7 +458,6 @@ impl AQF {
                 //let mut decode: Option<(usize, [Ext; 64])> = None;
                 loop {
                     // Matching remainder found => compare extensions
-                    println!("looking for a matching remainder..");
                     if self.remainder(loc) == rem {
                         // // Check cached code:
                         // match decode {
@@ -477,16 +479,9 @@ impl AQF {
                         // We should be able to unwrap cached decode w/o error b/c of the previous match
                         let exts = ExtensionArcd::decode(self.blocks[loc/64].extensions);
                         let ext = exts[loc%64];
-                        if print {
-                            println!("matching rem found, comparing ext at {}: filter-ext={:#?}, ", loc, ext);
-                        };
                         if self.ext_matches(ext, query_hash) {
                             // Extensions match => check remote to see if true match
                             let pairs = self.remote.get(quot, rem, ext);
-                            if print {
-                                println!("matching ext (ext={}, hash={:b})! pairs found: {:#?}",
-                                         ext, query_hash, pairs);
-                            }
                             debug_assert!(
                                 !pairs.is_empty(),
                                 "Each stored fingerprint must have a corresponding entry in the \
@@ -498,29 +493,18 @@ impl AQF {
                             match pairs.iter().find(|(e, _)| *e == elt) {
                                 None => {
                                     // If false match, adapt on all elt/hash pairs
-                                    if print { println!("false match! matches={:#?}", pairs); };
                                     // FIXME: I had to change pairs to use strings instead of slices b/c of borrowing checks,
                                     //  and that might slow things down; might make sense to put everything in this block
                                     //  in the same function
                                     self.adapt(loc, quot, rem, query_hash, pairs, exts);
                                 }
-                                Some(_) => {
-                                    if print { println!("true match!"); };
-                                }
+                                Some(_) => {}
                             }
                             return true;
-                        } else {
-                            if print { println!("Extensions don't match"); };
                         }
                     }
                     // Stop when l < 0, l = quot, or l-1 is a runend
                     if loc == 0 || loc == quot || self.is_runend(loc-1) {
-                        if print {
-                            print!("Exiting because ");
-                            if loc == 0 { println!("loc = 0") }
-                            else if loc == quot { println!("loc = quot = {}", loc) }
-                            else { println!("is_runend(loc-1)") }
-                        }
                         return false;
                     } else {
                         loc -= 1;
@@ -532,16 +516,18 @@ impl AQF {
             }
         }
     }
+    /// Returns true if the extension is consistent with the query hash, false otherwise.
+    ///
+    /// For an extension of length `len` with bits `bits`, checks if the bits in the query hash
+    /// from `q + r` to `q + r + len - 1`
     fn ext_matches(&self, ext: Ext, query_hash: u128) -> bool {
         match ext {
             Ext::Some {bits, len} => {
                 // Compute extension from query hash and check if it matches the stored ext
-                println!("bits={}, len={}, calc'ed_ext={}", bits, len, ext);
                 self.calc_ext(query_hash, len) == bits
             }
             Ext::None => {
                 // No extension: extension matches by default
-                println!("No extension: automatic match");
                 true
             }
         }
@@ -660,9 +646,7 @@ mod tests {
                 Err(_) => panic!("Failed to encode extensions={:?}", raw),
             };
             b.extensions = code;
-            //println!("exts={:?}, code={}", join_displayable(&raw, ""), code);
         }
-        //println!("before clearing remote: filter: {:#?}", filter);
         // Clear and check remote
         for i in 0..filter.nblocks {
             filter.clear_block_remote_exts(i);
@@ -673,46 +657,37 @@ mod tests {
         // }
         //println!("after clearing remote: filter: {:#?}", filter);
     }
-    #[test]
-    fn test_repeated_quot_rem() {
-        // Check that elts with the same (quot, rem) are in the filter
-
-        /// Use filter's hash fn but set quotient bits to 0, remainder bits to 0xf
-        fn hash_trunc(filter: &AQF, elt: &str) -> u128 {
-            (filter.hash(elt) << (filter.r + filter.q)) +
-                (((1<<filter.r)-1) << filter.q)
-        }
-
-        // Try inserting multiple elts that have the same quot, rem
-        let nslots = 64;
-        let nelts = 10;
-        let mut filter = AQF::new(nslots, 4);
+    /// Use filter's hash fn but set quotient bits to 0, remainder bits to 1s
+    fn hash_trunc(filter: &AQF, elt: &str) -> u128 {
+        let (r, q) = (filter.r, filter.q);
+        let hash = filter.hash(elt);
+        (hash & !b128::half_open(0, q)) | b128::half_open(q, q+r)
+    }
+    fn build_and_test_repeating<F>(n: usize, ext_policy: F)
+        where F: FnOnce(usize) -> Ext + Copy {
+        // Build filter with n extensions, following `ext_policy`
+        let mut filter = AQF::new(64, 4);
         let mut exts = [Ext::None; 64];
-        for i in 0..nelts {
+        for i in 0..n {
             let elt = i.to_string();
-            // Set up hash so quotient and remainder are the same for all elts:
-            // quot = 0, rem = 0xf = 0b1111
             let hash = hash_trunc(&filter, &elt[..]);
             let quot = filter.calc_quot(hash);
             let rem = filter.calc_rem(hash);
-            let ext = if i % 2 == 0 {
-                Ext::Some{bits: 1, len: 1}
-            } else {
-                Ext::None
-            };
+            let ext = ext_policy(i);
             exts[i%64] = ext;
             let code = ExtensionArcd::encode(exts).unwrap();
             filter.raw_insert(quot, rem);
             filter.remote.add(quot, rem, ext, elt, hash);
             filter.blocks[i/64].extensions = code;
         }
-        println!("filter: {:#?}", filter);
+        println!("filter after inserts: {:#?}", filter);
+
         // Check that the filter contains elts without extensions
-        for i in 0..nelts {
+        for i in 0..n {
             let elt = &i.to_string()[..];
             let mut hash = hash_trunc(&filter, elt);
-            if i % 2 == 0 {
-                hash |= 1 << (filter.r + filter.q)
+            if let Ext::Some{bits, len} = ext_policy(i) {
+                hash |= (bits as u128) << (filter.q + filter.r + len);
             }
             println!("i={}, hash=0b{:b}, filter={:#?}", i, hash, filter);
             assert!(
@@ -722,9 +697,26 @@ mod tests {
         }
     }
     #[test]
+    fn test_repeating_zig() {
+        // Try inserting multiple elts that have the same quot, rem
+        // where selectors are on/off by parity
+        build_and_test_repeating(10, |i|
+            if i % 2 == 0 { Ext::Some{bits: 1, len: 1} }
+            else { Ext::None })
+    }
+    #[test]
+    fn test_repeating_ascending() {
+        // Try inserting multiple elts with same quot, rem
+        // where selectors grow with index
+        build_and_test_repeating(6, |i|
+            if i < 2 { Ext::None }
+            else if i < 4 { Ext::Some {bits: 0b1, len: 1}}
+            else { Ext::Some {bits: 0b11, len: 2}});
+    }
+    #[test]
     fn test_insert_and_query() {
         // Insert and query elts, ensure that there are no false negatives
-        let a: usize = 1 << 17; // use set size 2^14
+        let a: usize = 1 << 20; // use set size 2^14
         let ratio = 100.0;      // a/s
         let s = nearest_pow_of_2((a as f64/ratio) as usize);
         let s = ((s as f64) * 0.95) as usize;

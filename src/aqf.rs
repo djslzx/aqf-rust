@@ -3,24 +3,26 @@ use std::{
     collections::HashMap,
     fmt,
 };
-use crate::{Rem, Filter};
-use crate::util::{
-    bitarr::{b64, b128},
-    nearest_pow_of_2,
-};
-use crate::rsqf::{
-    RankSelectBlock,
-    RankSelectResult,
-    RankSelectQuotientFilter,
-};
-use crate::arcd::{
-    Arcd,
-    extensions::Ext,
-    ext_arcd::ExtensionArcd,
-    // selector_arcd::SelectorArcd,
+use crate::{
+    Rem,
+    Filter,
+    util::{
+        bitarr::{b64, b128},
+        nearest_pow_of_2,
+    },
+    rsqf::{
+        RankSelectBlock,
+        RankSelectResult,
+        RankSelectQuotientFilter,
+    },
+    arcd::{
+        Arcd,
+        extensions::Ext,
+        ext_arcd::ExtensionArcd,
+    },
 };
 
-struct Block {
+pub struct Block {
     remainders: [Rem; 64],
     occupieds: u64,
     runends: u64,
@@ -199,7 +201,7 @@ mod remote {
 use remote::Remote;
 
 #[derive(Debug)]
-struct AQF {
+pub struct AQF {
     blocks: Vec<Block>,
     nblocks: usize,
     nslots: usize,
@@ -725,7 +727,7 @@ mod tests {
     #[test]
     fn test_insert_and_query() {
         // Insert and query elts, ensure that there are no false negatives
-        let a: usize = 1 << 20; // use set size 2^14
+        let a: usize = 1 << 20;
         let ratio = 100.0;      // a/s
         let s = nearest_pow_of_2((a as f64/ratio) as usize);
         let s = ((s as f64) * 0.95) as usize;

@@ -135,8 +135,8 @@ mod remote {
         pub fn is_empty(&self) -> bool {
             self.data.is_empty()
         }
-        pub fn keys(&self) -> Vec<&(Quot, Rem)> {
-            self.data.keys().collect::<Vec<&(Quot, Rem)>>()
+        pub fn items(&self) -> Vec<(&(Quot, Rem), &Vec<(Ext, String, u128)>)> {
+            self.data.iter().collect()
         }
         /// Inserts the mapping `(quot, rem, ext) -> (elt, hash)` into the remote representation
         pub fn add(&mut self, quot: Quot, rem: Rem, ext: Ext, elt: String, hash: u128) {
@@ -190,6 +190,9 @@ mod remote {
                     }
                 }
             }
+        }
+        pub fn clear_ext(&mut self, quot: Quot, rem: Rem, ext: Ext) {
+            self.update_ext(quot, rem, ext, Ext::None);
         }
     }
 }
@@ -371,26 +374,10 @@ impl AQF {
                 let ext = exts[i%64];
                 // Clear extension if it is not already Ext::None
                 if let Ext::Some{bits: _, len: _} = ext {
-                    filter.clear_remote_ext(quot, rem, ext);
+                    filter.remote.clear_ext(quot, rem, ext);
                 }
             });
     }
-    /// Removes the fingerprint extension from the remote rep
-    fn clear_remote_ext(&mut self, quot: usize, rem: Rem, ext: Ext) {
-        self.remote.update_ext(quot, rem, ext, Ext::None);
-    }
-    // /// Updates a fingerprint extension in the remote rep
-    // fn update_remote_ext(&mut self, quot: usize, rem: Rem, old_ext: Ext, new_ext: Ext) {
-    //     // Remove existing (quot, rem, ext) triple
-    //     let val = match self.remote.remove(&(quot, rem, old_ext)) {
-    //         Some(v) => v,
-    //         None => panic!("Tried to update a triple that doesn't exist: \
-    //                         quot={}, rem={}, ext={}, new_ext={}, filter: {:#?}",
-    //                        quot, rem, old_ext, new_ext, self)
-    //     };
-    //     // Insert new (quot, rem, empty_ext) triple
-    //     self.remote.insert((quot, rem, new_ext), val);
-    // }
     /// Insert a (quot, rem) pair into filter
     fn raw_insert(&mut self, quot: usize, rem: Rem) {
         assert!(quot < self.nslots);
@@ -646,11 +633,13 @@ mod tests {
         for i in 0..filter.nblocks {
             filter.clear_block_remote_exts(i);
         }
-        // FIXME
-        // for &(_, _, ext) in filter.remote.keys() {
-        //     assert_eq!(*ext, Ext::None);
-        // }
-        //println!("after clearing remote: filter: {:#?}", filter);
+        // Check that all extensions are cleared
+        for (_, vec) in filter.remote.items() {
+            for (ext, _, _) in vec {
+                assert_eq!(*ext, Ext::None);
+            }
+        }
+        // eprintln!("after clearing remote: filter: {:#?}", filter);
     }
     /// Use filter's hash fn but set quotient bits to 0, remainder bits to 1s
     fn hash_trunc(filter: &AQF, elt: &str) -> u128 {
@@ -659,7 +648,7 @@ mod tests {
         (hash & !b128::half_open(0, q)) | b128::half_open(q, q+r)
     }
     fn build_and_test_repeating<F>(n: usize, ext_policy: F)
-        where F: FnOnce(usize) -> Ext + Copy {
+        where F: FnOnce(&AQF, u128, usize) -> Ext + Copy {
         // Build filter with n extensions, following `ext_policy`
         let mut filter = AQF::new(64, 4);
         let mut exts = [Ext::None; 64];
@@ -668,45 +657,70 @@ mod tests {
             let hash = hash_trunc(&filter, &elt[..]);
             let quot = filter.calc_quot(hash);
             let rem = filter.calc_rem(hash);
-            let ext = ext_policy(i);
+            let ext = ext_policy(&filter, hash, i);
+            // eprintln!("i={}, ext={:?}", i, ext);
             exts[i%64] = ext;
             let code = ExtensionArcd::encode(exts).unwrap();
             filter.raw_insert(quot, rem);
             filter.remote.add(quot, rem, ext, elt, hash);
             filter.blocks[i/64].extensions = code;
         }
-        println!("filter after inserts: {:#?}", filter);
+        // eprintln!("filter after inserts: {:#?}", filter);
 
         // Check that the filter contains elts without extensions
         for i in 0..n {
             let elt = &i.to_string()[..];
             let mut hash = hash_trunc(&filter, elt);
-            if let Ext::Some{bits, len} = ext_policy(i) {
+            if let Ext::Some{bits, len} = ext_policy(&filter, hash, i) {
                 hash |= (bits as u128) << (filter.q + filter.r + len);
             }
-            println!("i={}, hash=0b{:b}, filter={:#?}", i, hash, filter);
+            // eprintln!("i={}, hash=0b{:b}, filter={:#?}", i, hash, filter);
             assert!(
                 filter.raw_query(hash, elt),
                 "Filter doesn't contain elt {}",
                 elt);
         }
     }
+    /// Get the `k`-th to `(k+n-1)`-th bits in `bits`.
+    fn get_bits(bits: u128, k: usize, n: usize) -> u64 {
+        ((b128::half_open(k, k+n) & bits) >> k) as u64
+    }
     #[test]
-    fn test_repeating_zig() {
+    fn test_repeating_sawtooth() {
         // Try inserting multiple elts that have the same quot, rem
         // where selectors are on/off by parity
-        build_and_test_repeating(10, |i|
-            if i % 2 == 0 { Ext::Some{bits: 1, len: 1} }
-            else { Ext::None })
+        build_and_test_repeating(10, |filter: &AQF, hash: u128, i: usize| {
+            let k = filter.q + filter.r;
+            if i % 2 == 0 {
+                Ext::Some{
+                    bits: get_bits(hash, k, 1),
+                    len: 1
+                }
+            } else {
+                Ext::None
+            }
+        })
     }
     #[test]
     fn test_repeating_ascending() {
         // Try inserting multiple elts with same quot, rem
         // where selectors grow with index
-        build_and_test_repeating(6, |i|
-            if i < 2 { Ext::None }
-            else if i < 4 { Ext::Some {bits: 0b1, len: 1}}
-            else { Ext::Some {bits: 0b11, len: 2}});
+        build_and_test_repeating(6, |filter: &AQF, hash: u128, i: usize| {
+            let k = filter.q + filter.r;
+            if i < 2 {
+                Ext::None
+            } else if i < 4 {
+                Ext::Some {
+                    bits: get_bits(hash, k, 1),
+                    len: 1
+                }
+            } else {
+                Ext::Some {
+                    bits: get_bits(hash, k, 2),
+                    len: 2
+                }
+            }
+        });
     }
     #[test]
     fn test_insert_and_query() {

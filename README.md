@@ -19,7 +19,11 @@ An implementation of the Adaptive Quotient Filter (AQF) in Rust.
 - Organization
   - [ ] Make RSQF a supertrait of Filter
 
-## Implementation notes
+## To think about
+- Only store the hash in remote and ditch the word (comparing word to elt is potentially slow, faster to compare hashes)
+
+# Implementation notes
+## Transitioning from C to Rust
 The logic is very close to that of the C implementation, with a few notable differences:
 
 - *The filter now grows when it runs out of space for remainders, instead of starting off
@@ -50,7 +54,34 @@ The logic is very close to that of the C implementation, with a few notable diff
   This is especially important for incrementing direct/indirect offsets.
 - Functions are more rigorously tested. See the `tests` module for details.
 
-# Issues from C code
+## Handling fingerprint collisions
+
+### Remote representation
+
+Given elements `A` and `B` that have the same quotient `q` and remainder `r`, a non-adaptive quotient filter need only store one copy of the pair `(q, r)`.  
+
+In the AQF, we store both `A` and `B` in the remote representation, so that the fingerprints for both can adapt independent of each other. This leaves us with a choice of what to store in the local filter:
+
+1. "One-to-many": We store one copy of the pair `(q, r)` in the filter, which maps to `A` and `B` in the remote representation.  When there is a collision at `(q, r)` for a query `C`, we adapt either one or all of the elements associated with it, which requires that we perform an insertion to handle the case where the extensions for `A` and `B` (relative to `C`) diverge.  
+
+2. "Many-to-many": We store two copies of the pair `(q, r)` in the filter. This means that we need not perform additional inserts when a query collides with `(q, r)`.
+
+We go with the latter approach because it is simpler.
+
+### Decision points
+
+There are a few key points in the code where we need to choose policies to deal with fingerprint collisions consistently.
+
+At query time, we need policies to determine the following:
+ - _Whether a query fingerprint matches a stored fingerprint._ Our current policy is to find the first stored fingerprint whose quotient, remainder, and extension match that of the query fingerprint. This means that if stored fingeprints `f(a)` and `f(b)` share the same quotient and remainder, but `f(a)` has an extension and `f(b)` doesn't, such that `f(a) = q:r:e` and `f(b) = q:r:_`, then when querying with `a`, we may find `q:r:_` instead of `q:r:e`. 
+
+ - _Which remote elements are associated with a local element._ Once we have found a stored fingerprint `f(s)` that matches a query fingerprint `f(q)` of query element `q`, we need to determine whether `q` has been inserted into the filter (i.e., whether the result is a true or false positive) to determine whether we need to adapt.  This requires retrieving `S(f(s))`, the set of stored elements associated with `f(s)`, and seeing whether any `s` in `S(f(s))` matches `q`. Therefore, we need to define `S`, which maps from a stored fingerprint to its associated stored elements.
+
+At adapt time, we need to determine the following:
+ - _Which remote element to update._ If `q` does not match any element in `S(f(s))`, then we need to adapt.  But if there are multiple elements in `S(f(s))`, which of these elements should we extend the fingerprints of?
+   - "Single": extend the fingerprint of a single element plucked arbitrarily from `S(f(s))`.
+   - "All": extend the fingerprints for all `s` in `S(f(s))`
+ - _Which remote elements to rebuild._ If we run out of space in a block's encoding, we clear all the extensions of local fingerprints in the block. This necessitates that we also clear the extensions of the remote elements, which in turn requires that we have a mapping from local fingerprints to remote elements.  
 
 ## Shifting selectors/extensions during inserts
 In the C implementation, we don't shift selectors during insertions.  This isn't an issue for our current test suite, because we do all inserts before doing any queries.  This means that we don't have any nonzero selectors at insert time, so inserts need not worry about shifting selectors. But to make the filter more general, we need to shift selectors/extensions during insertions (do speed this up, we can check whether extensions are 0 and skip shifting them if this is the case).

@@ -54,6 +54,29 @@ The logic is very close to that of the C implementation, with a few notable diff
   This is especially important for incrementing direct/indirect offsets.
 - Functions are more rigorously tested. See the `tests` module for details.
 
+## Offsets
+
+In an RSQF, each block stores an offset, which lets us avoid searching the entire filter when looking for a run; instead, we can start at the block containing the quotient of the word we are interested in and use offsets to account for runs from earlier blocks.
+
+The offset `O_i` of the absolute index `i` in filter `Q` is defined as
+```
+O_i = max(select(Q.runends, rank(Q.occupieds, i)) - i, 0)
+```
+This measures the distance from `i` to the `k`-th runend in `Q`, where `k` is the number of runs with quotients in the interval `[0, i]`.  Therefore, when `i` is occupied, `O_i` will be the distance from `i` to its runend; when `i` is not occupied, `O_i` will be the distance from `i` to the runend of the last quotient before `i`. In the second case, the distance may be negative (if the run before `i` ends before `i`); instead of storing this distance, we store `O_i = 0`, using `max(x, 0)` to clamp.
+
+### Blocking
+
+Because we only store offsets for the first slot in each block, for a block `B`,
+- if `B[0]` is occupied, then `B.offset` will be the distance from `B.start` to the runend for `B[0]`;
+- if `B[0]` is unoccupied, then `B.offset` will be either `0` or the distance from `B.start` to the runend for the last run from a block before `B`. 
+
+To compute the offset of a slot `j` where `i = j - (j mod 64)`, i.e., `i` is the position of the start of the block that `j` belongs to, Pandey et al. suggest the following procedure:
+```
+d = rank(Q.occupieds[i+1, j], j-i-1)
+O_j = select(Q.runends[i+O_i+1, end], d)
+```
+`d` represents the number of occupied quotients in the interval `[i+1, j]`; that is, between `i` and `j` and excluding `i`. `O_j` is computed as the `d`-th runend in `Q` after `i+0_i`.
+
 ## Handling fingerprint collisions
 
 ### Remote representation
@@ -79,8 +102,12 @@ At query time, we need policies to determine the following:
 
 At adapt time, we need to determine the following:
  - _Which remote element to update._ If `q` does not match any element in `S(f(s))`, then we need to adapt.  But if there are multiple elements in `S(f(s))`, which of these elements should we extend the fingerprints of?
-   - "Single": extend the fingerprint of a single element plucked arbitrarily from `S(f(s))`.
-   - "All": extend the fingerprints for all `s` in `S(f(s))`
+   - One: extend the fingerprint of a single element plucked arbitrarily from `S(f(s))`.
+     - Pros: fast, rebuilds less often
+     - Cons: under-adapts
+   - All: extend the fingerprints for all `s` in `S(f(s))`
+     - Pros: fixes collisions more thoroughly
+     - Cons: slow;  over-adapts; only distinguishes false matches from query, but not with each other 
  - _Which remote elements to rebuild._ If we run out of space in a block's encoding, we clear all the extensions of local fingerprints in the block. This necessitates that we also clear the extensions of the remote elements, which in turn requires that we have a mapping from local fingerprints to remote elements.  
 
 ## Shifting selectors/extensions during inserts

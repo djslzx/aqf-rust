@@ -11,7 +11,7 @@ use crate::util::{
 use std::fmt;
 
 /// Abstraction for blocks used in RSQF
-pub trait RankSelectBlock {
+pub trait RankSelectBlock: fmt::Debug {
     // Required methods:
     fn new() -> Self;
     fn occupieds(&self) -> u64;
@@ -24,11 +24,15 @@ pub trait RankSelectBlock {
     fn set_remainder(&mut self, i: usize, to: Rem);
     fn offset(&self) -> usize;
     fn inc_offset(&mut self);
-
-    // Received methods:
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let rems = (0..64)
+            .map(|x| format!("0x{:x}", self.remainder(x)))
+            .collect::<Vec<String>>()
+            .chunks(8)
+            .map(|c| c.join(" "))
+            .collect::<Vec<String>>();
         f.debug_struct("Block")
-            .field("remainders", &(0..64).map(|x| self.remainder(x)))
+            .field("remainders", &rems)
             .field("occupieds", &format_args!("[{:064b}]", self.occupieds().reverse_bits()))
             .field("runends  ", &format_args!("[{:064b}]", self.runends().reverse_bits()))
             .field("offset   ", &self.offset()).finish()
@@ -87,7 +91,47 @@ pub trait RankSelectQuotientFilter {
         debug_assert!(i < self.nslots(), "Index out of range: {}/{}", i, self.nslots());
         self.mut_block(i/64).set_remainder(i%64, to);
     }
-    // Hashing
+    /// Checks that representation invariants are met
+    fn check_rep(&self) {
+        // Check offsets
+        for i in 0..self.nblocks() {
+            let b = self.block(i);
+            let b_start = i * 64;
+            let runend = self.rank_select(b_start);
+            if b.is_occupied(0) {
+                assert_eq!(
+                    runend, RankSelectResult::Full(b_start + b.offset()),
+                    "B[0] occupied => offset points to B[0]'s runend; blocks[{},{}]={:#?}",
+                    i, i + b.offset()/64, (i..i+b.offset()/64).map(|j| format!("{:#?}", self.block(j))),
+                );
+            } else { // b[0] is unoccupied
+                if b.offset() == 0 {
+                    if b.is_runend(0) {
+                        assert_eq!(
+                            runend, RankSelectResult::Full(b_start),
+                            "B[0] unoccupied, B.offset = 0, B.runend[0] = 1 => \
+                             last prior run ends at B[0]; blocks[{}]={:#?}",
+                            i, b,
+                        );
+                    } else {
+                        assert_eq!(
+                            runend, RankSelectResult::Empty,
+                            "B[0] unoccupied, B.offset = 0, B.runend[0] = 0 => \
+                             last prior run ends before B[0]; blocks[{}]={:#?}",
+                            i, b,
+                        );
+                    }
+                } else { // b.offset > 0
+                    assert_eq!(
+                        runend, RankSelectResult::Full(b_start + b.offset()),
+                        "B[0] unoccupied, B.offset > 0 => \
+                         prior runend ends at B.start + B.offset; blocks[{}]={:#?}",
+                        i, b
+                    );
+                }
+            }
+        }
+    }
     fn hash(&self, word: &str) -> u128 {
         let ref mut b = word.as_bytes();
         match murmur3::murmur3_x64_128(b, self.seed()) {
@@ -226,6 +270,7 @@ pub trait RankSelectQuotientFilter {
                 i -= 1;
             }
         }
+        self.check_rep();
     }
     /// Applies `f(quot, pos)` to all slots in the run associated with `quot`.
     /// TODO: turn into a macro?
@@ -275,6 +320,7 @@ pub trait RankSelectQuotientFilter {
                 }
             }
         }
+        self.check_rep();
     }
     /// Determines the quotient and runend of the last run to intersect
     /// the `block_i`-th block.
@@ -406,6 +452,7 @@ pub trait RankSelectQuotientFilter {
             self.set_runend(i+1, self.is_runend(i));
         }
         self.set_runend(a, false);
+        self.check_rep();
     }
     /// Increment direct/indirect offsets with targets in [a,b]
     /// to reflect shifting remainders/runends in [a,b]
@@ -445,6 +492,7 @@ pub trait RankSelectQuotientFilter {
             // Step back by one block
             block_i -= 1;
         }
+        self.check_rep();
     }
     /// Increment indirect offsets targeting loc for quot's run
     fn inc_indirect_offsets(&mut self, quot: usize, loc: usize) {
@@ -478,6 +526,7 @@ pub trait RankSelectQuotientFilter {
             }
 
         }
+        self.check_rep();
     }
 }
 
@@ -485,7 +534,7 @@ pub mod rsqf {
     use super::*;
     use std::fmt;
 
-    struct Block {
+    pub struct Block {
         remainders: [Rem; 64],
         occupieds: u64,
         runends: u64,
@@ -493,7 +542,7 @@ pub mod rsqf {
     }
 
     #[derive(Debug)]
-    struct RSQF {
+    pub struct RSQF {
         blocks: Vec<Block>,
         nblocks: usize,
         nslots: usize,   // number of slots (nblocks * 64)
@@ -606,6 +655,7 @@ pub mod rsqf {
             self.blocks.push(b);
             self.nslots += 64;
             self.nblocks += 1;
+            self.check_rep();
         }
     }
 
@@ -679,9 +729,10 @@ pub mod rsqf {
                         self.nslots, quot/64, quot%64,
                     ),
             }
+            self.check_rep();
         }
         /// Computes filter load factor
-        fn load(&self) -> f64 {
+        pub fn load(&self) -> f64 {
             (self.nelts as f64)/(self.nslots as f64)
         }
     }
@@ -692,7 +743,7 @@ pub mod rsqf {
             let quot = self.calc_quot(hash);
             let rem = self.calc_rem(hash); // TODO: get 0-th rem for now
 
-            if !self.is_occupied(quot) {
+            let result = if !self.is_occupied(quot) {
                 false
             } else {
                 if let RankSelectResult::Full(mut loc) = self.rank_select(quot) {
@@ -714,13 +765,16 @@ pub mod rsqf {
                 } else {
                     false
                 }
-            }
+            };
+            self.check_rep();
+            result
         }
         fn insert(&mut self, elt: String) {
             let hash = self.hash(&elt[..]);
             let quot = self.calc_quot(hash);
             let rem = self.calc_rem(hash);
             self.raw_insert(quot, rem);
+            self.check_rep();
         }
     }
 
@@ -1807,6 +1861,19 @@ pub mod rsqf {
                            "i={}",
                            i);
             }
+        }
+        #[test]
+        fn test_raw_insert_repeated() {
+            let n = 1 << 10;
+            let mut filter = RSQF::new(n, 4);
+            for i in 0..n {
+                filter.insert("apple".to_string());
+                assert!(filter.query("apple".to_string()));
+                // if i % 1000 == 0 {
+                //     println!("i={}", i);
+                // }
+            }
+            println!("filter={:#?}", filter);
         }
         #[test]
         fn test_insert_and_query() {

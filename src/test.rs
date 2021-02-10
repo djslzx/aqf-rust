@@ -3,7 +3,13 @@ use std::{
     fs,
     io,
 };
-use crate::{util, rsqf::RankSelectQuotientFilter, aqf::AQF, Filter};
+use crate::{util,
+            rsqf::{
+                RankSelectQuotientFilter,
+                rsqf::RSQF,
+            },
+            aqf::AQF,
+            Filter};
 
 /// Counts the number of unique lines in the file at `path`.
 fn num_uniq_lines(path: &str) -> Result<usize, io::Error> {
@@ -32,24 +38,39 @@ pub fn file_fpr_test(path: &str, n_uniq_lines: usize, a_s: f64, load: f64, rem_s
     let s = (util::nearest_pow_of_2(s) as f64 * load) as usize;
 
     // Initialize filter and pull lines from file
-    eprint!("Initializing filter and pulling lines from file...");
-    let mut filter = AQF::new(s, rem_size);
+    eprintln!("Initializing filter and pulling lines from file...");
+    // let mut filter = AQF::new(s, rem_size);
+    let mut filter = RSQF::new(s, rem_size);
     let mut set = HashSet::new();
     let fstr = fs::read_to_string(path).unwrap();
     let mut lines = fstr.lines();
-    eprintln!(" done!");
 
     // Insert `s` items into the filter and set
-    eprint!("Inserting {} items into filter...", s);
+    eprintln!("Inserting {} items into filter...", s);
     for _ in 0..s {
         let elt = lines.next().unwrap().to_string();
         set.insert(elt.clone());
-        filter.insert(elt);
+        filter.insert(elt.clone());
+        assert!(set.contains(&elt.clone()),
+                "Set doesn't contain inserted elt={}", elt.clone());
+        if !filter.query(elt.clone()) {
+            let hash = filter.hash(&elt.clone());
+            let quot = filter.calc_quot(hash);
+            let rem = filter.calc_rem(hash);
+            let block_neighborhood = [
+                filter.block(quot/64 - 1),
+                filter.block(quot/64),
+                filter.block(quot/64 + 1),
+            ];
+            eprintln!(
+                "Filter doesn't contain elt={}; quot={} (block_i={}, slot_i={}), rem=0x{:x}, blocks={:#?}",
+                elt, quot, quot/64, quot%64, rem, block_neighborhood,
+            );
+        }
     }
-    eprintln!(" done!");
 
     // Query the filter with the remaining items in the file
-    eprint!("Querying the filter with the remaining lines...", );
+    eprintln!("Querying the filter with the remaining lines...", );
     let mut n_fps = 0;     // number of false positives
     let mut n_rfps = 0;    // number of repeated false positives
     let mut n_fns = 0;     // number of false negatives
@@ -69,9 +90,16 @@ pub fn file_fpr_test(path: &str, n_uniq_lines: usize, a_s: f64, load: f64, rem_s
             }
         } else if !in_filter && in_set { // false negative
             n_fns += 1;
+            let hash = filter.hash(&elt);
+            let quot = filter.calc_quot(hash);
+            let rem = filter.calc_rem(hash);
+            let block = filter.block(quot/64);
+            panic!(
+                "False negative on {}; quot={} (block_i={}, slot_i={}), rem=0x{:x}, block={:#?}",
+                elt, quot, quot/64, quot%64, rem, block,
+            );
         }
     }
-    eprintln!(" done!");
     println!("False positives: {} ({}%), repeated: {} ({}%)",
              n_fps, (n_fps as f64)/(n_queries as f64),
              n_rfps, (n_rfps as f64)/(n_queries as f64));

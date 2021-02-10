@@ -338,7 +338,8 @@ pub trait RankSelectQuotientFilter {
         let n = popcnt(b.occupieds());
         let mut q: usize;
         if n == 0 {
-            if b.offset() == 0 {
+            if b.offset() == 0 && !b.is_runend(0) {
+                // Negative offset
                 return None
             } else {
                 q = match self.prev_quot(block_start) {
@@ -1035,15 +1036,15 @@ pub mod rsqf {
             // Block with an intersecting run from an earlier block
             for i in 0..64 {
                 let mut filter = RSQF::new(64*3, 4);
-                // run spanning two blocks
+                // Run: [i, [i, i+64]]
                 filter.set_occupied(i, true);
                 filter.set_runend(i+64, true);
                 filter.blocks[0].offset = if i == 0 { 64 } else { 0 };
-                filter.blocks[1].offset = i+1;
-                for j in 0..2 {
-                    assert_eq!(filter.last_intersecting_run(j),
+                filter.blocks[1].offset = i;
+                for block_i in 0..=1 {
+                    assert_eq!(filter.last_intersecting_run(block_i),
                                Some((i, i+64)),
-                               "i={}", i);
+                               "i={}, block_i={}", i, block_i);
                 }
             }
         }
@@ -1052,14 +1053,14 @@ pub mod rsqf {
             // Block completely covered by a run from an earlier block
             for i in 0..64 {
                 let mut filter = RSQF::new(64*3, 4);
-                // run spanning three blocks
+                // Run spanning three blocks: [i: [i, i+128]]
                 filter.set_occupied(i, true);
                 filter.set_runend(i+128, true);
                 filter.blocks[0].offset = if i == 0 { 128 } else { 0 };
-                filter.blocks[1].offset = i+64+1;
-                filter.blocks[2].offset = i+1;
-                for j in 0..3 {
-                    assert_eq!(filter.last_intersecting_run(j),
+                filter.blocks[1].offset = i+64;
+                filter.blocks[2].offset = i;
+                for block_i in 0..=2 {
+                    assert_eq!(filter.last_intersecting_run(block_i),
                                Some((i, i+128)));
                 }
             }
@@ -1075,14 +1076,14 @@ pub mod rsqf {
             // (2) Run between block 0 and block 1 [16,64]
             filter.set_occupied(16, true);
             filter.set_runend(64, true);
-            filter.blocks[1].offset = 1; // slot after 64
+            filter.blocks[1].offset = 0;
             // (3) Run in only block 1 [65, 69]
             filter.set_occupied(65, true);
             filter.set_runend(69, true);
             // (4) Run going from block 1 to 2 [127, 132]
             filter.set_occupied(127, true);
             filter.set_runend(132, true);
-            filter.blocks[2].offset = 5; // slot after 132
+            filter.blocks[2].offset = 4;
             // (5) Run in only block 2 [129, 135]
             filter.set_occupied(129, true);
             filter.set_runend(135, true);
@@ -1121,7 +1122,7 @@ pub mod rsqf {
             // Run from end of b0 to start of b1 [60: [60, 68]]
             filter.set_occupied(60, true);
             filter.set_runend(68, true);
-            filter.blocks[1].offset = 5;
+            filter.blocks[1].offset = 4;
             // Run in b1 [64: [69,76]]
             filter.set_occupied(64, true);
             filter.set_runend(76, true);
@@ -1135,7 +1136,7 @@ pub mod rsqf {
             // Run in b1 [120: [127,129]]
             filter.set_occupied(120, true);
             filter.set_runend(129, true);
-            filter.blocks[2].offset = 2;
+            filter.blocks[2].offset = 1;
 
             let runs = apply_collect_runs(&mut filter, 1);
             //println!("runs={:#?}", runs);
@@ -1165,24 +1166,24 @@ pub mod rsqf {
             // (1) Run from block 0 to 1 [10: [10,70]]
             filter.set_occupied(10, true);
             filter.set_runend(70, true);
-            filter.blocks[1].offset = 7; // slot after 70
+            filter.blocks[1].offset = 6;
             // (2) Run from block 0 to 1 [20: [71,80]
             filter.set_occupied(20, true);
             filter.set_runend(80, true);
-            filter.blocks[1].offset = 17; // slot after 80
+            filter.blocks[1].offset = 16;
             // (3) Run from block 0 to block 2 [30:[81,130]]
             filter.set_occupied(30, true);
             filter.set_runend(130, true);
-            filter.blocks[1].offset = 67; // slot after 130
-            filter.blocks[2].offset = 3;
+            filter.blocks[1].offset = 66;
+            filter.blocks[2].offset = 2;
             // (4) Run from block 1 to block 2 [65: [131]]
             filter.set_occupied(65, true);
             filter.set_runend(131, true);
-            filter.blocks[2].offset = 4;
+            filter.blocks[2].offset = 3;
             // (5) Run from block 1 to block 2 [120: [132]]
             filter.set_occupied(120, true);
             filter.set_runend(132, true);
-            filter.blocks[2].offset = 5;
+            filter.blocks[2].offset = 4;
 
             assert_eq!(
                 filter.last_intersecting_run(0),
@@ -1211,8 +1212,6 @@ pub mod rsqf {
             // Empty filter
             {
                 b = &mut filter.blocks[0];
-                b.occupieds = 0;
-                b.runends = 0;
                 assert_eq!(filter.select_runend(0, 0), None);
             }
             // Filter with one run
@@ -1220,14 +1219,16 @@ pub mod rsqf {
                 b = &mut filter.blocks[0];
                 b.occupieds = 1;
                 b.runends = 1;
+                b.offset = 0;
                 assert_eq!(filter.select_runend(0, 0), Some(0));
             }
             // Filter with multiple runs
             {
                 b = &mut filter.blocks[0];
                 // First two runs each have two elts, third run has one elt
-                b.occupieds = 0b1101;
-                b.runends  = 0b11010;
+                b.occupieds = 0b01101;
+                b.runends   = 0b11010;
+                b.offset    = 1;
                 assert_eq!(filter.select_runend(0, 0), Some(1));
                 assert_eq!(filter.select_runend(0, 1), Some(3));
                 assert_eq!(filter.select_runend(0, 2), Some(4));
@@ -1241,12 +1242,11 @@ pub mod rsqf {
             // Filter with run starting in block 0 and ending in block 1
             {
                 let b0 = &mut filter.blocks[0];
-                b0.occupieds = 1;
-                b0.runends = 0;
+                b0.set_occupied(0, true);
 
                 let b1 = &mut filter.blocks[1];
-                b1.occupieds = 0;
-                b1.runends = 1;
+                b1.set_runend(0, true);
+                b1.offset = 0;
 
                 assert_eq!(filter.select_runend(0, 0), Some(64));
                 assert_eq!(filter.select_runend(1, 0), Some(64));
@@ -1258,12 +1258,13 @@ pub mod rsqf {
             {
                 let b0 = &mut filter.blocks[0];
                 b0.occupieds = 0b11;
-                b0.runends = 0b01;
+                b0.runends   = 0b01;
+                b0.offset    = 0;
 
                 let b1 = &mut filter.blocks[1];
                 b1.occupieds = 0b10;
-                b1.runends = 0b11;
-                b1.offset = 1;
+                b1.runends   = 0b11;
+                b1.offset    = 0;
 
                 assert_eq!(filter.select_runend(0, 0), Some(0));
                 assert_eq!(filter.select_runend(0, 1), Some(64));
@@ -1281,7 +1282,7 @@ pub mod rsqf {
                     assert_eq!(filter.rank_select(i), RankSelectResult::Empty)
                 }
             }
-            // Filter with one run
+            // Filter with one singleton run
             {
                 for i in 0..64 {
                     let b = &mut filter.blocks[0];
@@ -1319,7 +1320,7 @@ pub mod rsqf {
             let mut filter = RSQF::new(64*3, 4);
             let b0 = &mut filter.blocks[0];
             b0.set_occupied(0, true);
-            b0.offset = 64;     // position of b0[0]'s runend
+            b0.offset = 64;
 
             let b1 = &mut filter.blocks[1];
             b1.set_runend(0, true);
@@ -1414,17 +1415,17 @@ pub mod rsqf {
         /// Insert a single run [a,b] into a filter of 128 slots
         /// (doesn't handle overlaps with existing state)
         fn insert_run(filter: &mut RSQF, a: usize, b: usize) {
+            debug_assert!(a < 128 && b < 128);
+
             // Setup filter
             filter.set_occupied(a, true);
             filter.set_runend(b, true);
-            // Set offset
+            // Set offsets
             if a == 0 {
-                // Set first block's offset if a = 0
                 filter.blocks[0].offset = b;
             }
-            if a < 64 && b >= 64 {
-                // Set second block's offset if a in B[0] and b in B[1]
-                filter.blocks[1].offset = b-63;
+            if a == 64 || (a < 64 && b >= 64) {
+                filter.blocks[1].offset = b-64;
             }
         }
         #[test]
@@ -1465,6 +1466,8 @@ pub mod rsqf {
 
             // Test first_unused_slot for runs [a,b] and [c,d] nonoverlapping
             let test_two_runs = |a: usize, b: usize, c: usize, d: usize| {
+                debug_assert!(a < b && b < c && c < d);
+
                 let mut filter = RSQF::new(nslots, 4);
                 insert_run(&mut filter, a, b);
                 insert_run(&mut filter, c, d);

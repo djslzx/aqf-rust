@@ -10,6 +10,8 @@ use crate::util::{
 };
 use std::fmt;
 
+const CHECK_REP: bool = true;
+
 /// Abstraction for blocks used in RSQF
 pub trait RankSelectBlock: fmt::Debug {
     // Required methods:
@@ -93,6 +95,10 @@ pub trait RankSelectQuotientFilter {
     }
     /// Checks that representation invariants are met
     fn check_rep(&self) {
+        if !CHECK_REP {
+            return;
+        }
+
         // Check offsets
         for i in 0..self.nblocks() {
             let b = self.block(i);
@@ -112,15 +118,15 @@ pub trait RankSelectQuotientFilter {
                     if b.is_runend(0) {
                         assert_eq!(
                             runend, RankSelectResult::Full(b_start),
-                            "B[0] unoccupied, B.offset = 0, B.runend[0] = 1 => \
+                            "B[0] unoccupied, B.offset = 0, B[0] is runend => \
                              last prior run ends at B[0]; blocks[{}]={:#?}",
                             i, b,
                         );
                     } else {
                         assert_eq!(
                             runend, RankSelectResult::Empty,
-                            "B[0] unoccupied, B.offset = 0, B.runend[0] = 0 => \
-                             last prior run ends before B[0]; blocks[{}]={:#?}",
+                            "B[0] unoccupied, B.offset = 0, B[0] is not runend => \
+                             last prior run ends before B[0] (negative offset); blocks[{}]={:#?}",
                             i, b,
                         );
                     }
@@ -132,6 +138,18 @@ pub trait RankSelectQuotientFilter {
                         i, b
                     );
                 }
+            }
+        }
+        // Check that if offset is 0, there is no runend before the first occupied bit
+        // unless the runend is at 0
+        for i in 0..self.nblocks() {
+            let block = self.block(i);
+            if block.offset() == 0 && !block.is_runend(0) {
+                assert!(
+                    block.occupieds().trailing_zeros() <= block.runends().trailing_zeros(),
+                    "Block {}'s occupieds start later than its runends even though it has 0 offset; block={:#?}",
+                    i, block,
+                )
             }
         }
     }
@@ -364,12 +382,10 @@ pub trait RankSelectQuotientFilter {
             // Otherwise, work backwards to find the first run whose runend
             // doesn't exceed the end of the block, then choose the run
             // after that one
-            let mut last_q;
-            let mut last_end;
             loop {
                 // Cache current (q, end)
-                last_q = q;
-                last_end = end;
+                let last_q = q;
+                let last_end = end;
                 // Get previous occupied pair
                 match self.prev_pair(q, end, block_i) {
                     Some((new_q, new_end)) => {
@@ -461,7 +477,6 @@ pub trait RankSelectQuotientFilter {
             self.set_runend(i+1, self.is_runend(i));
         }
         self.set_runend(a, false);
-        self.check_rep();
     }
     /// Increment non-negative offsets with targets in [a,b]
     /// to reflect shifting remainders/runends in [a,b]
@@ -492,7 +507,6 @@ pub trait RankSelectQuotientFilter {
                 block.inc_offset();
             }
         }
-        self.check_rep();
     }
 }
 
@@ -683,7 +697,6 @@ pub mod rsqf {
                         self.set_remainder(r+1, rem);
                     } else {
                         // Extend an existing run
-                        // Don't need to set occupied
                         // Shift runend, add rem, shift offsets
                         self.set_runend(r, false);
                         self.set_runend(r+1, true);
@@ -840,8 +853,8 @@ pub mod rsqf {
                 }
             }
         }
-        #[test] //expensive test (~1.5s)
-        #[ignore]
+        #[test]
+        #[ignore] // expensive test (~1.5s)
         fn test_prev_q_triple() {
             // Three quotients at i <= j <= k
             let nslots = 64*3;
@@ -931,8 +944,8 @@ pub mod rsqf {
                 }
             }
         }
-        #[ignore] //expensive
         #[test]
+        #[ignore] //expensive
         fn test_prev_end_triple() {
             // Three quotients at i <= j <= k
             {
@@ -1853,7 +1866,17 @@ pub mod rsqf {
             for i in 0..a {
                 let elt = &i.to_string();
                 if set.contains(elt) {
-                    assert!(filter.query(elt.clone()), "elt={}", elt);
+                    if !filter.query(elt.clone()) {
+                        let hash = filter.hash(&elt.clone());
+                        let quot = filter.calc_quot(hash);
+                        let rem = filter.calc_rem(hash);
+                        panic!(
+                            "False negative: set contains elt={}, but filter doesn't; \
+                             quot={} (block_i={}, slot_i={}), rem={:x}, blocks[{}]={:#?}",
+                            elt, quot, quot/64, quot%64, rem, quot/64, filter.block(quot/64),
+                        );
+                    }
+
                 } else {
                     fps += filter.query(elt.clone()) as usize;
                 }

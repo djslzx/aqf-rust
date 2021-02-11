@@ -57,6 +57,27 @@ O_j = select(Q.runends[i+O_i+1, end], d)
 ```
 `d` represents the number of occupied quotients in the interval `[i+1, j]`; that is, between `i` and `j` and excluding `i`. `O_j` is computed as the `d`-th runend in `Q` after `i+0_i`.
 
+### Insertions
+Insertions will modify offsets in different ways depending on how the inserted elements extend existing runs or create new ones.
+
+> Note that at insert time, we only increment those offsets that are already non-negative.  A negative offset will either remain negative or become zero, but because zero offsets and negative offsets are represented the same way (as zeros), we need not track this transition explicitly.
+
+Let `x` be the element we are inserting, with `q = quot(x)`. 
+
+If the home slot `q` is empty, then there is no runend at `q`, so there can't be a non-negative offset pointing to it.  Therefore, we don't need to increment offsets in the case that we add a new run to an empty home slot.
+
+If the home slot `q` is taken, then we find the runend `r = rank_select(q)`.  If `q` is occupied, then `r` marks the end of `q`'s run.  If `q` is not occupied, then `r` marks the end of the last run before `q`.  In both cases, the remainder for `x` should be inserted at `r+1`. To prepare the ground for this insertion, we find `u`, the first unused slot after `r`, and shift forward (by 1) the remainders and runends in the interval `[r+1, u-1]`, along with their associated offsets.  This frees up a slot at `u`.
+
+If `q` is unoccupied, we create a new run.  To do this, we set the runend bit at `r+1`, set the occupied bit at `q`, and deal with any offsets pointing to `r` for blocks whose first slots are not occupied.  That is, we need to increment any _unowned_ offsets pointing to `r`.  There's one exception: if `q % 64 = 0`, then `Q.blocks[q/64].offset = r+1`. 
+
+> #### Owned and unowned offsets
+> If a block `B`'s offset points to the runend for `B[0]`, then we call `B.offset` _owned_.  If, instead, `B`'s offset points to the runend of the last runend in a block before `B`, then we say that `B.offset` is _unowned_.
+>
+> We can distinguish owned from unowned offsets by checking whether `B[0]` is occupied.
+> If it is occupied, then `B.offset` is owned; otherwise, it is unowned.
+
+If `q` is occupied, then we extend an existing run by shifting the runend bit at `r` (unset runend `r` and set runend `r+1`) and incrementing any non-negative offsets pointing to `r`.  
+
 ## Handling fingerprint collisions
 
 ### Remote representation

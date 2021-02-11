@@ -207,7 +207,7 @@ pub trait RankSelectQuotientFilter {
         // Compute i + O_i where i = x - (x mod 64)
         if !b.is_occupied(0) && b.offset() == 0 && !b.is_runend(0) {
             // b[0] unoccupied, b.offset = 0, b[0] not a runend =>
-            // Negative offset
+            // Negative offset (TODO: turn into helper fn)
             if slot_i == 0 {
                 return RankSelectResult::Empty;
             }
@@ -339,7 +339,7 @@ pub trait RankSelectQuotientFilter {
         let mut q: usize;
         if n == 0 {
             if b.offset() == 0 && !b.is_runend(0) {
-                // Negative offset
+                // Negative offset b/c !b.occupied(0), b.offset=0, !b.is_runend(0)
                 return None
             } else {
                 q = match self.prev_quot(block_start) {
@@ -463,11 +463,11 @@ pub trait RankSelectQuotientFilter {
         self.set_runend(a, false);
         self.check_rep();
     }
-    /// Increment direct/indirect offsets with targets in [a,b]
+    /// Increment non-negative offsets with targets in [a,b]
     /// to reflect shifting remainders/runends in [a,b]
-    fn inc_offsets(&mut self, a: usize, b: usize) {
+    fn inc_nonneg_offsets(&mut self, a: usize, b: usize) {
         assert!(a < self.nslots() && b < self.nslots(),
-                "Parameters out of bounds: a={}, b={}, nslots={}",
+                "inc_nonneg_offsets: Parameters out of bounds: a={}, b={}, nslots={}",
                 a, b, self.nslots());
         // Exit early if invalid range
         if a > b {
@@ -475,65 +475,22 @@ pub trait RankSelectQuotientFilter {
         }
         // Start block_i at the first block after b, clamping it so it doesn't go off the end,
         // and work backwards
-        let mut block_i = min(b/64 + 1, self.nblocks() - 1);
-        loop {
-            // Account for direct/indirect offsets:
-            // If direct, b[0] is occupied and target = x + offset
-            // If indirect, b[0] is unoccupied and target = x + offset - 1
-            let block_start = block_i * 64;
+        let start = min(b/64 + 1, self.nblocks() - 1);
+        for block_i in (0..=start).rev() {
             let block = self.mut_block(block_i);
-            // If block_i == 0, then the offset must be direct, as there's no valid indirect target
-            if block_i == 0 && !block.is_occupied(0) {
-                break;
+            let block_start = block_i * 64;
+            // Skip this block if it has a negative offset
+            if !block.is_occupied(0) && block.offset() == 0 && !block.is_runend(0) {
+                continue;
             }
-            let target = block_start + block.offset() - if block.is_occupied(0) { 0 } else { 1 };
+            // Exit if the target for b.offset is before the interval;
+            // if it's within the interval, increment offset
+            let target = block_start + block.offset();
             if target < a {
-                // If we've stepped back far enough, exit
                 break;
             } else if target <= b {
-                // If a <= target <= b, increment offset
                 block.inc_offset();
             }
-            // If we're on the first block, we can't step back further: exit
-            if block_i == 0 {
-                break;
-            }
-            // Step back by one block
-            block_i -= 1;
-        }
-        self.check_rep();
-    }
-    /// Increment indirect offsets targeting loc for quot's run
-    fn inc_indirect_offsets(&mut self, quot: usize, loc: usize) {
-        assert!(loc < self.nslots() && quot < self.nslots(),
-                "Parameters out of bounds: quot={}, x={}",
-                quot, loc);
-        // Start block_i at the first block after b, clamping it so it doesn't go off the end
-        let mut block_i = min(loc/64 + 1, self.nblocks() - 1);
-        // Walk through backwards from the first block after b
-        loop {
-            if block_i == 0 { break; }
-            let block_start = block_i * 64;
-            let block = self.mut_block(block_i);
-            let target = block_start + block.offset() - 1;
-            // If we've stepped back far enough, exit
-            if target < loc {
-                break;
-            }
-            // If target == loc, b[0] isn't occupied (offset is indirect),
-            // and quot < block_start (indirect offsets target runends
-            // that start in earlier blocks)
-            if target == loc && !block.is_occupied(0) && quot < block_start {
-                block.inc_offset();
-            }
-            if block_i == 0 {
-                // If we're on the first block, we can't step back further: exit
-                break;
-            } else {
-                // Step back by one block
-                block_i -= 1;
-            }
-
         }
         self.check_rep();
     }
@@ -697,6 +654,8 @@ pub mod rsqf {
             // Find the appropriate runend
             match self.rank_select(quot) {
                 RankSelectResult::Empty => {
+                    // Insert a new singleton run
+                    // (Doesn't need to modify offsets)
                     self.set_occupied(quot, true);
                     self.set_runend(quot, true);
                     self.set_remainder(quot, rem);
@@ -715,21 +674,20 @@ pub mod rsqf {
                         }
                     };
                     self.shift_remainders_and_runends(r+1, u-1);
-                    self.inc_offsets(r+1, u-1);
+                    self.inc_nonneg_offsets(r, u-1);
                     // Start a new run or extend an existing one
                     if !self.is_occupied(quot) {
-                        // Set occupied, add runend, add rem, shift indirect offsets
+                        // Start a new run
                         self.set_occupied(quot, true);
                         self.set_runend(r+1, true);
                         self.set_remainder(r+1, rem);
-                        self.inc_indirect_offsets(quot, r);
                     } else {
+                        // Extend an existing run
                         // Don't need to set occupied
                         // Shift runend, add rem, shift offsets
                         self.set_runend(r, false);
                         self.set_runend(r+1, true);
                         self.set_remainder(r+1, rem);
-                        self.inc_offsets(r, r);
                     }
                 }
                 RankSelectResult::Overflow =>
@@ -1211,7 +1169,6 @@ pub mod rsqf {
 
             // Empty filter
             {
-                b = &mut filter.blocks[0];
                 assert_eq!(filter.select_runend(0, 0), None);
             }
             // Filter with one run
@@ -1637,155 +1594,126 @@ pub mod rsqf {
             }
         }
         fn offset_state_init() -> RSQF {
-            let mut filter = RSQF::new(64*4, 4);
+            // TODO: better represent important test cases for new offset handling
+            //  - negative offset
+            //  - zero offset
+            //    - elt from prior run at 0
+            //    - singleton run at 0
+            //  - positive offset
+            //    - end of prior run
+            //    - end of first run in block
+            let mut filter = RSQF::new(64*7, 4);
             let b = &mut filter.blocks;
-            // Run in b0: [0:(0,1)]
+            // Run in b0: [0:(0,0)]: zero offset, singleton run
             b[0].set_occupied(0, true);
-            b[0].set_runend(1, true);
-            b[0].offset = 1;          // direct offset
-            // Run in b0,b1: [63:(63,65)]
+            b[0].set_runend(0, true);
+            b[0].offset = 0;
+            // Run in b0,b1: [63:(63,64)]: zero offset, end of prior run
             b[0].set_occupied(63, true);
-            b[1].set_runend(1, true);
-            b[1].set_occupied(0, false);
-            b[1].offset = 2;          // indirect offset
+            b[1].set_runend(0, true);
+            b[1].offset = 0;
             // Run in b1: [67: (67,72)]
             b[1].set_occupied(3, true);
             b[1].set_runend(8, true);
             // Run in b1: [68: (73,73)]
             b[1].set_occupied(4, true);
             b[1].set_runend(9, true);
-            // Run from b1 to b3: [94: (192)]
-            b[1].set_occupied(30, true);
-            b[2].offset = 65;     // dist from 128 to 192+1 (indirect)
-            b[3].set_runend(0, true);
-            b[3].offset = 1;      // dist from 192 to 192+1 (indirect)
+            // Run in b1, b2: [69: (74,129)]: positive offset, end of prior run
+            b[1].set_occupied(5, true);
+            b[2].set_runend(1, true);
+            //b[2].offset = 1;
+            // Run in b1,b2: [80: (130,130)]: positive offset, end of prior run
+            b[1].set_occupied(16, true);
+            b[2].set_runend(2, true);
+            b[2].offset = 2;
+            // Run in b3: [192: (192, 194)]: positive offset, end of run at start of block
+            b[3].set_occupied(0, true);
+            b[3].set_runend(2, true);
+            b[3].offset = 2;
+            // Negative offset for b4
+            b[4].offset = 0;
+            // Run in b4,b6: [260: (260, 390)]: offset > 64
+            b[4].set_occupied(4, true);
+            b[6].set_runend(6, true);
+            b[5].offset = 70;
+            b[6].offset = 6;
 
             filter
         }
         #[test]
-        fn test_inc_offsets() {
+        fn test_inc_nonneg_offsets() {
             // Inc all offsets [0, n-2] -> [1, n-1]
             {
                 let mut filter = offset_state_init();
-                filter.inc_offsets(0, filter.nslots-2);
+                filter.inc_nonneg_offsets(0, filter.nslots-1);
                 let b = filter.blocks;
-                assert_eq!(b[0].offset, 2);
-                assert_eq!(b[1].offset, 3);
-                assert_eq!(b[2].offset, 66);
-                assert_eq!(b[3].offset, 2);
+                assert_eq!(b[0].offset, 1);
+                assert_eq!(b[1].offset, 1);
+                assert_eq!(b[2].offset, 3);
+                assert_eq!(b[3].offset, 3);
+                assert_eq!(b[4].offset, 0);
+                assert_eq!(b[5].offset, 71);
+                assert_eq!(b[6].offset, 7);
             }
             // Inc ranges that nothing is pointing to
             {
                 let mut filter = offset_state_init();
-                let ranges = [(2,64), (66, 191), (193, 255)];
-                for (start,end) in ranges.iter() {
-                    filter.inc_offsets(*start, *end);
+                for (start, end) in [
+                    (1, 63),
+                    (65, 129),
+                    (131, 193),
+                    (195, 389),
+                    (391, 447)
+                ].iter() {
+                    filter.inc_nonneg_offsets(*start, *end);
                     let b = &filter.blocks;
                     // Check that for each inc_offsets call,
                     // none of the offsets are changed
-                    assert_eq!(b[0].offset, 1);
-                    assert_eq!(b[1].offset, 2);
-                    assert_eq!(b[2].offset, 65);
-                    assert_eq!(b[3].offset, 1);
+                    assert_eq!(b[0].offset, 0);
+                    assert_eq!(b[1].offset, 0);
+                    assert_eq!(b[2].offset, 2);
+                    assert_eq!(b[3].offset, 2);
+                    assert_eq!(b[4].offset, 0);
+                    assert_eq!(b[5].offset, 70);
+                    assert_eq!(b[6].offset, 6);
                 }
-            }
-            // Inc the elts that things are pointing to
-            {
-                let mut filter = offset_state_init();
-                filter.inc_offsets(1,1);
-                assert_eq!(filter.blocks[0].offset, 2);
-                assert_eq!(filter.blocks[1].offset, 2);
-                assert_eq!(filter.blocks[2].offset, 65);
-                assert_eq!(filter.blocks[3].offset, 1);
-                filter.inc_offsets(65,65);
-                assert_eq!(filter.blocks[0].offset, 2);
-                assert_eq!(filter.blocks[1].offset, 3);
-                assert_eq!(filter.blocks[2].offset, 65);
-                assert_eq!(filter.blocks[3].offset, 1);
-                filter.inc_offsets(192,192);
-                assert_eq!(filter.blocks[0].offset, 2);
-                assert_eq!(filter.blocks[1].offset, 3);
-                assert_eq!(filter.blocks[2].offset, 66);
-                assert_eq!(filter.blocks[3].offset, 2);
             }
         }
         #[test]
+        fn test_inc_nonneg_offsets_targeted() {
+            // Inc the elts that things are pointing to
+            fn inc_target_test(target: usize, offsets: [usize; 7]) {
+                let mut filter = offset_state_init();
+                filter.inc_nonneg_offsets(target, target);
+                for i in 0..7 {
+                    assert_eq!(filter.blocks[i].offset, offsets[i]);
+                }
+            }
+            inc_target_test(0, [1, 0, 2, 2, 0, 70, 6]);
+            inc_target_test(64, [0, 1, 2, 2, 0, 70, 6]);
+            inc_target_test(130, [0, 0, 3, 2, 0, 70, 6]);
+            inc_target_test(194, [0, 0, 2, 3, 0, 70, 6]);
+            inc_target_test(390, [0, 0, 2, 2, 0, 71, 7]);
+        }
+        #[test]
         fn test_inc_offset_negative_target() {
-            // Check that target doesn't go negative (block_i == 0 and b[0][0] unoccupied)
-            let mut filter = RSQF::new(64, 4); // target is indirect
-            filter.inc_offsets(0,0);
+            // Check that target doesn't go negative (block_i == 0 and blocks[0][0] unoccupied)
+            let mut filter = RSQF::new(64, 4);
+            filter.inc_nonneg_offsets(0,0);
             assert_eq!(filter.blocks[0].offset, 0);
-            filter.blocks[0].set_occupied(0, true); // target is now direct
-            filter.inc_offsets(0,0);                // should bump up offset to 1
+
+            filter.blocks[0].set_occupied(0, true);
+            filter.blocks[0].set_runend(0, true);
+            filter.inc_nonneg_offsets(0,0);                // should bump up offset to 1
             assert_eq!(filter.blocks[0].offset, 1);
-            filter.inc_offsets(1,1);                // should bump up offset to 2
+
+            filter.inc_nonneg_offsets(1,1);                // should bump up offset to 2
             assert_eq!(filter.blocks[0].offset, 2);
 
             // Check for multi-block case
             let mut filter = RSQF::new(64*5, 4);
-            filter.inc_offsets(0, filter.nslots-1);
+            filter.inc_nonneg_offsets(0, filter.nslots-1);
             assert_eq!(filter.blocks[0].offset, 0);
-        }
-        #[test]
-        fn test_inc_indirect_offsets() {
-            // Inc direct targets does nothing
-            {
-                let mut filter = offset_state_init();
-                filter.inc_indirect_offsets(0, 1);
-                assert_eq!(filter.blocks[0].offset, 1);
-                assert_eq!(filter.blocks[1].offset, 2);
-                assert_eq!(filter.blocks[2].offset, 65);
-                assert_eq!(filter.blocks[3].offset, 1);
-            }
-            // Inc indirect offsets but large quot does nothing
-            {
-                let mut filter = offset_state_init();
-                filter.inc_indirect_offsets(66, 65);
-                filter.inc_indirect_offsets(193, 192);
-                assert_eq!(filter.blocks[0].offset, 1);
-                assert_eq!(filter.blocks[1].offset, 2);
-                assert_eq!(filter.blocks[2].offset, 65);
-                assert_eq!(filter.blocks[3].offset, 1);
-            }
-            // Range with only indirect offsets does inc
-            {
-                let mut filter = offset_state_init();
-                filter.inc_indirect_offsets(0, 65);
-                filter.inc_indirect_offsets(0, 192);
-                assert_eq!(filter.blocks[0].offset, 1);
-                assert_eq!(filter.blocks[1].offset, 3);
-                assert_eq!(filter.blocks[2].offset, 66);
-                assert_eq!(filter.blocks[3].offset, 2);
-            }
-            // Range with both indirect/direct offsets
-            // only increments indirect offsets
-            {
-                let mut filter = offset_state_init();
-                for i in (0..filter.nslots).rev() {
-                    filter.inc_indirect_offsets(0, i);
-                }
-                assert_eq!(filter.blocks[0].offset, 1);
-                assert_eq!(filter.blocks[1].offset, 3);
-                assert_eq!(filter.blocks[2].offset, 66);
-                assert_eq!(filter.blocks[3].offset, 2);
-            }
-        }
-        #[test]
-        fn test_inc_indirect_offset_negative_target() {
-            // Shouldn't ever affect first block b/c first block
-            // can't have an indirect target
-            let mut filter = RSQF::new(64, 4);
-            filter.inc_offsets(0, 0);
-            assert_eq!(filter.blocks[0].offset, 0);
-
-            // Check for case where indirect offset
-            // points to run in previous block at slot 63
-            // This also tests our check for block_i == 0 in the loop
-            let mut filter = RSQF::new(128, 4);
-            filter.blocks[0].set_occupied(63, true);
-            filter.blocks[0].set_runend(63, true);
-            filter.inc_indirect_offsets(0, 63);
-            assert_eq!(filter.blocks[1].offset, 1);
         }
         // Checks if x is a power of 2
         fn is_pow_2(x: usize) -> bool {
@@ -1896,12 +1824,9 @@ pub mod rsqf {
         fn test_raw_insert_repeated() {
             let n = 1 << 10;
             let mut filter = RSQF::new(n, 4);
-            for i in 0..n {
+            for _ in 0..n {
                 filter.insert("apple".to_string());
                 assert!(filter.query("apple".to_string()));
-                // if i % 1000 == 0 {
-                //     println!("i={}", i);
-                // }
             }
             println!("filter={:#?}", filter);
         }

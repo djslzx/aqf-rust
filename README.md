@@ -68,7 +68,9 @@ If the home slot `q` is empty, then there is no runend at `q`, so there can't be
 
 If the home slot `q` is taken, then we find the runend `r = rank_select(q)`.  If `q` is occupied, then `r` marks the end of `q`'s run.  If `q` is not occupied, then `r` marks the end of the last run before `q`.  In both cases, the remainder for `x` should be inserted at `r+1`. To prepare the ground for this insertion, we find `u`, the first unused slot after `r`, and shift forward (by 1) the remainders and runends in the interval `[r+1, u-1]`, along with their associated offsets.  This frees up a slot at `u`.
 
-If `q` is unoccupied, we create a new run.  To do this, we set the runend bit at `r+1`, set the occupied bit at `q`, and deal with any offsets pointing to `r` for blocks whose first slots are not occupied.  That is, we need to increment any _unowned_ offsets pointing to `r`.  There's one exception: if `q % 64 = 0`, then `Q.blocks[q/64].offset = r+1`. 
+If `q` is unoccupied, we create a new run.  To do this, we set the runend bit at `r+1`, set the occupied bit at `q`, and deal with any offsets pointing to `r`. Creating a new run shifts offsets in two cases:
+ - If `q % 64 = 0`, then the block containing `q` should have its offset set to `r+1 - (q - (q mod 64))`.
+ - If a block whose first slot is unoccupied has its offset pointing to `r` before the insertion, this offset should be incremented.  In other words, any _unowned offsets_ pointing to `r` should be incremented.
 
 > #### Owned and unowned offsets
 > If a block `B`'s offset points to the runend for `B[0]`, then we call `B.offset` _owned_.  If, instead, `B`'s offset points to the runend of the last runend in a block before `B`, then we say that `B.offset` is _unowned_.

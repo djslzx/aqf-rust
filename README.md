@@ -58,19 +58,10 @@ O_j = select(Q.runends[i+O_i+1, end], d)
 `d` represents the number of occupied quotients in the interval `[i+1, j]`; that is, between `i` and `j` and excluding `i`. `O_j` is computed as the `d`-th runend in `Q` after `i+0_i`.
 
 ### Insertions
-Insertions will modify offsets in different ways depending on how the inserted elements extend existing runs or create new ones.
+Insertions will modify offsets in different ways depending on whether an inserted element's home slot is empty and whether the inserted elements extend existing runs or create new ones.
 
-> Note that at insert time, we only increment those offsets that are already non-negative.  A negative offset will either remain negative or become zero, but because zero offsets and negative offsets are represented the same way (as zeros), we need not track this transition explicitly.
-
-Let `x` be the element we are inserting, with `q = quot(x)`. 
-
-If the home slot `q` is empty, then there is no runend at `q`, so there can't be a non-negative offset pointing to it.  Therefore, we don't need to increment offsets in the case that we add a new run to an empty home slot.
-
-If the home slot `q` is taken, then we find the runend `r = rank_select(q)`.  If `q` is occupied, then `r` marks the end of `q`'s run.  If `q` is not occupied, then `r` marks the end of the last run before `q`.  In both cases, the remainder for `x` should be inserted at `r+1`. To prepare the ground for this insertion, we find `u`, the first unused slot after `r`, and shift forward (by 1) the remainders and runends in the interval `[r+1, u-1]`, along with their associated offsets.  This frees up a slot at `u`.
-
-If `q` is unoccupied, we create a new run.  To do this, we set the runend bit at `r+1`, set the occupied bit at `q`, and deal with any offsets pointing to `r`. Creating a new run shifts offsets in two cases:
- - If `q % 64 = 0`, then the block containing `q` should have its offset set to `r+1 - (q - (q mod 64))`.
- - If a block whose first slot is unoccupied has its offset pointing to `r` before the insertion, this offset should be incremented.  In other words, any _unowned offsets_ pointing to `r` should be incremented.
+> #### We only increment non-negative offsets
+> At insert time, we only increment those offsets that are already non-negative.  A negative offset will either remain negative or become zero, but because zero offsets and negative offsets are represented the same way (as zeros), we need not track this transition explicitly.
 
 > #### Owned and unowned offsets
 > If a block `B`'s offset points to the runend for `B[0]`, then we call `B.offset` _owned_.  If, instead, `B`'s offset points to the runend of the last runend in a block before `B`, then we say that `B.offset` is _unowned_.
@@ -78,7 +69,20 @@ If `q` is unoccupied, we create a new run.  To do this, we set the runend bit at
 > We can distinguish owned from unowned offsets by checking whether `B[0]` is occupied.
 > If it is occupied, then `B.offset` is owned; otherwise, it is unowned.
 
-If `q` is occupied, then we extend an existing run by shifting the runend bit at `r` (unset runend `r` and set runend `r+1`) and incrementing any non-negative offsets pointing to `r`.  
+Let `x` be the element we are inserting, with `q = quot(x)`. 
+
+If the home slot `q` is empty, then there is no runend at `q`, so there can't be a non-negative offset pointing to it (because non-negative offsets must point to runends).  Therefore, we don't need to increment offsets in this case.
+
+If the home slot `q` is taken, then we need to lookup the appropriate location to insert into.  First, we find the runend `r = rank_select(q)`.  
+
+If `q` is occupied, then `r` marks the end of `q`'s run.  Inserting `x` means extending this run with `rem(x)`.  We first make room for `rem(x)` by finding `u`, the first unused slot after `r`, and shifting forward (by 1) the remainders and runends in the interval `[r+1, u-1]`, updating offsets with targets in this interval. Now that slot `r+1` is open, we insert `rem(x)` at `r+1`: we shift the runend bit at `r` to `r+1` and increment any non-negative offsets formerly pointing to `r`.
+
+If `q` is unoccupied, then `r` marks the end of the last run before `q`. Here, inserting `x` means adding a new run.  As in the previous case, we make room for `rem(x)` at `r+1` by shifting runends and remainders and updating offsets.  Next, we handle offsets previously pointing to `r` in the following manner:
+  - If the offset is owned, then don't increment it. Call the offset `o` and let `B` be the block it belongs to.  `o` being owned means that `r` is the index of the end of the run starting at `B.start`.  Adding a new run at `r+1` should not affect `B`'s offset.
+  - If the offset is unowned, then:
+    - If `q < B.start` for `B` the block containing `o`, then increment.  This condition must be met for `B.offset` to be affected by `q`'s runend.
+    - If `q = B.start`, then increment.  Adding a new run for `B[0]` should set `B.offset` to `r+1`.  Because it was previously pointing to `r`, this means that incrementing `B.offset` will set it to the correct value.
+    - If `q > B.start`, don't increment.  A run for a quotient after `B` should not affect `B.offset`.
 
 ## Handling fingerprint collisions
 

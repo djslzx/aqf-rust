@@ -1,5 +1,9 @@
 ## TODO
 - Testing
+    - [x] Think about offset handling in insertions
+      - [ ] Write up added logic
+    - [x] Think about more rep invariants, add to checkrep
+    - [ ] Add more testing to offset handling
     - [ ] Add unit tests for `raw_insert` and `raw_query`, paying special attention to offset handling
     - [ ] Add integration tests (adversary, file-based, etc.)
 - Organization

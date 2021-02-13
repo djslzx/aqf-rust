@@ -262,6 +262,9 @@ impl RankSelectQuotientFilter for AQF {
         self.nslots += 64;
         self.nblocks += 1;
     }
+    fn inc_nelts(&mut self) {
+        self.nelts += 1;
+    }
 }
 
 impl AQF {
@@ -379,59 +382,6 @@ impl AQF {
                     filter.remote.clear_ext(quot, rem, ext);
                 }
             });
-    }
-    /// Insert a (quot, rem) pair into filter
-    fn raw_insert(&mut self, quot: usize, rem: Rem) {
-        assert!(quot < self.nslots);
-        self.nelts += 1;
-
-        // Find the appropriate runend
-        match self.rank_select(quot) {
-            RankSelectResult::Empty => {
-                self.set_occupied(quot, true);
-                self.set_runend(quot, true);
-                self.set_remainder(quot, rem);
-            }
-            RankSelectResult::Full(r) => {
-                // Find u, the first open slot after r, and
-                // shift everything in [r+1, u-1] forward by 1 into [r+2, u],
-                // leaving r+1 writable
-                let u = match self.first_unused_slot(r) {
-                    Some(loc) => loc,
-                    None => {
-                        // Extend the filter by one block
-                        // and return the first empty index
-                        self.add_block();
-                        self.nslots - 64
-                    }
-                };
-                self.shift_remainders_and_runends(r+1, u-1);
-                // TODO: also shift fingerprint extensions
-                self.inc_offsets(r+1, u-1);
-                // Start a new run or extend an existing one
-                if !self.is_occupied(quot) {
-                    // Set occupied, add runend, add rem, shift indirect offsets
-                    self.set_occupied(quot, true);
-                    self.set_runend(r+1, true);
-                    self.set_remainder(r+1, rem);
-                    // TODO: add fingerprint extension
-                    self.inc_indirect_offsets(quot, r);
-                } else {
-                    // Don't need to set occupied
-                    // Shift runend, add rem, shift offsets
-                    self.set_runend(r, false);
-                    self.set_runend(r+1, true);
-                    self.set_remainder(r+1, rem);
-                    // TODO: add fingerprint extension
-                    self.inc_offsets(r, r);
-                }
-            }
-            RankSelectResult::Overflow =>
-                panic!(
-                    "AQF failed to find runend (nslots={}, quot=(block={}, slot={}))",
-                    self.nslots, quot/64, quot%64,
-                ),
-        }
     }
     fn raw_query(&mut self, hash: u128, elt: &str) -> bool {
         let query_hash = hash;

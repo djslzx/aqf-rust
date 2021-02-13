@@ -10,7 +10,7 @@ use crate::util::{
 };
 use std::fmt;
 
-const CHECK_REP: bool = true;
+const CHECK_REP: bool = false;
 
 /// Abstraction for blocks used in RSQF
 pub trait RankSelectBlock: fmt::Debug {
@@ -86,6 +86,7 @@ pub trait RankSelectQuotientFilter {
     fn block(&self, i: usize) -> &Self::Block;
     fn mut_block(&mut self, i: usize) -> &mut Self::Block;
     fn add_block(&mut self);
+    fn inc_nelts(&mut self);
 
     // Received methods:
     // Metadata getters/setters
@@ -528,6 +529,87 @@ pub trait RankSelectQuotientFilter {
             }
         }
     }
+    /// Increment non-negative offsets in response to the insertion of a new run
+    /// for quotient `quot` at slot `loc`.
+    ///
+    /// More concretely, this function increments _unowned_ offsets in blocks whose
+    /// first slot `s` is not after `quot`: `s >= quot`.
+    fn inc_offsets_for_new_run(&mut self, quot: usize, loc: usize) {
+        assert!(loc < self.nslots(),
+                "`loc` out of bounds: {}/{}",
+                loc, self.nslots());
+        // Start block_i at the first block after loc,
+        // clamping it so it doesn't go off the end
+        let start = min(loc/64 + 1, self.nblocks() - 1);
+        for i in (0..=start).rev() {
+            let b = self.mut_block(i);
+            let b_start = i * 64;
+            // Skip this block if it has a negative offset
+            if !b.is_occupied(0) && b.offset() == 0 && !b.is_runend(0) {
+                continue;
+            }
+            // Exit if the target for b.offset is before the interval;
+            // if it's within the interval, increment offset
+            let target = b_start + b.offset();
+            if target < loc {
+                break;
+            } else if target == loc && !b.is_occupied(0) && quot <= b_start {
+                b.inc_offset();
+            }
+        }
+    }
+    /// Insert a (quot, rem) pair into filter
+    fn raw_insert(&mut self, quot: usize, rem: Rem) {
+        assert!(quot < self.nslots());
+        self.inc_nelts();
+
+        // Find the appropriate runend
+        match self.rank_select(quot) {
+            RankSelectResult::Empty => {
+                // Insert a new singleton run at its home slot
+                // (Doesn't need to modify offsets)
+                self.set_occupied(quot, true);
+                self.set_runend(quot, true);
+                self.set_remainder(quot, rem);
+            }
+            RankSelectResult::Full(r) => {
+                // Find u, the first open slot after r, and
+                // shift everything in [r+1, u-1] forward by 1 into [r+2, u],
+                // leaving r+1 writable
+                let u = match self.first_unused_slot(r+1) {
+                    Some(loc) => loc,
+                    None => {
+                        // Extend the filter by one block
+                        // and return the first empty index
+                        self.add_block();
+                        self.nslots() - 64
+                    }
+                };
+                self.inc_offsets(r+1, u-1);
+                self.shift_remainders_and_runends(r+1, u-1);
+                // Start a new run or extend an existing one
+                if self.is_occupied(quot) {
+                    // quot occupied: extend an existing run
+                    self.inc_offsets(r, r);
+                    self.set_runend(r, false);
+                    self.set_runend(r+1, true);
+                    self.set_remainder(r+1, rem);
+                } else {
+                    // quot unoccupied: start a new run
+                    self.inc_offsets_for_new_run(quot, r);
+                    self.set_occupied(quot, true);
+                    self.set_runend(r+1, true);
+                    self.set_remainder(r+1, rem);
+                }
+            }
+            RankSelectResult::Overflow =>
+                panic!(
+                    "RSQF failed to find runend (nslots={}, quot=(block={}, slot={}))",
+                    self.nslots(), quot/64, quot%64,
+                ),
+        }
+        self.check_rep();
+    }
 }
 
 pub mod rsqf {
@@ -657,6 +739,9 @@ pub mod rsqf {
             self.nblocks += 1;
             self.check_rep();
         }
+        fn inc_nelts(&mut self) {
+            self.nelts += 1;
+        }
     }
 
     impl RSQF {
@@ -707,66 +792,6 @@ pub mod rsqf {
             };
             self.check_rep();
             out
-        }
-        /// Insert a (quot, rem) pair into filter
-        fn raw_insert(&mut self, quot: usize, rem: Rem) {
-            self.check_rep();
-            // {
-            //     let next = min(quot/64 + 1, self.nblocks - 1);
-            //     eprintln!(
-            //         "Inserting quot={} (block_i={}, slot_i={}), rem={:x} into blocks[{},{}]={:#?}",
-            //         quot, quot/64, quot%64, rem, quot/64, next,
-            //         [self.block(quot/64), self.block(next)],
-            //     );
-            // }
-
-            assert!(quot < self.nslots);
-            self.nelts += 1;
-
-            // Find the appropriate runend
-            match self.rank_select(quot) {
-                RankSelectResult::Empty => {
-                    // Insert a new singleton run at its home slot
-                    // (Doesn't need to modify offsets)
-                    self.set_occupied(quot, true);
-                    self.set_runend(quot, true);
-                    self.set_remainder(quot, rem);
-                }
-                RankSelectResult::Full(r) => {
-                    // Find u, the first open slot after r, and
-                    // shift everything in [r+1, u-1] forward by 1 into [r+2, u],
-                    // leaving r+1 writable
-                    let u = match self.first_unused_slot(r) {
-                        Some(loc) => loc,
-                        None => {
-                            // Extend the filter by one block
-                            // and return the first empty index
-                            self.add_block();
-                            self.nslots - 64
-                        }
-                    };
-                    self.inc_offsets(r, u-1);
-                    self.shift_remainders_and_runends(r+1, u-1);
-                    // Start a new run or extend an existing one
-                    if !self.is_occupied(quot) {
-                        // Start a new run
-                        self.set_occupied(quot, true);
-                        self.set_runend(r+1, true);
-                        self.set_remainder(r+1, rem);
-                    } else {
-                        // Extend an existing run
-                        self.set_runend(r, false);
-                        self.set_runend(r+1, true);
-                        self.set_remainder(r+1, rem);
-                    }
-                }
-                RankSelectResult::Overflow =>
-                    panic!(
-                        "RSQF failed to find runend (nslots={}, quot=(block={}, slot={}))",
-                        self.nslots, quot/64, quot%64,
-                    ),
-            }
-            self.check_rep();
         }
         /// Computes filter load factor
         pub fn load(&self) -> f64 {

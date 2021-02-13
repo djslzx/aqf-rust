@@ -11,6 +11,8 @@ use crate::{util,
             aqf::AQF,
             Filter};
 
+const DEBUG: bool = true;
+
 /// Counts the number of unique lines in the file at `path`.
 fn num_uniq_lines(path: &str) -> Result<usize, io::Error> {
     eprint!("Counting the number of lines in {}...", path);
@@ -39,8 +41,7 @@ pub fn file_fpr_test(path: &str, n_uniq_lines: usize, a_s: f64, load: f64, rem_s
 
     // Initialize filter and pull lines from file
     eprintln!("Initializing filter and pulling lines from file...");
-    // let mut filter = AQF::new(s, rem_size);
-    let mut filter = RSQF::new(s, rem_size);
+    let mut filter = AQF::new(s, rem_size);
     let mut set = HashSet::new();
     let fstr = fs::read_to_string(path).unwrap();
     let mut lines = fstr.lines();
@@ -90,14 +91,16 @@ pub fn file_fpr_test(path: &str, n_uniq_lines: usize, a_s: f64, load: f64, rem_s
             }
         } else if !in_filter && in_set { // false negative
             n_fns += 1;
-            let hash = filter.hash(&elt);
-            let quot = filter.calc_quot(hash);
-            let rem = filter.calc_rem(hash);
-            let block = filter.block(quot/64);
-            panic!(
-                "False negative on {}; quot={} (block_i={}, slot_i={}), rem=0x{:x}, block={:#?}",
-                elt, quot, quot/64, quot%64, rem, block,
-            );
+            if DEBUG {
+                let hash = filter.hash(&elt);
+                let quot = filter.calc_quot(hash);
+                let rem = filter.calc_rem(hash);
+                let block = filter.block(quot/64);
+                panic!(
+                    "False negative on {}; quot={} (block_i={}, slot_i={}), rem=0x{:x}, block={:#?}",
+                    elt, quot, quot/64, quot%64, rem, block,
+                );
+            }
         }
     }
     println!("False positives: {} ({}%), repeated: {} ({}%)",

@@ -10,8 +10,6 @@ use crate::util::{
 };
 use std::fmt;
 
-const CHECK_REP: bool = false;
-
 /// Abstraction for blocks used in RSQF
 pub trait RankSelectBlock: fmt::Debug {
     // Required methods:
@@ -115,10 +113,8 @@ pub trait RankSelectQuotientFilter {
         self.mut_block(i/64).set_remainder(i%64, to);
     }
     /// Checks that representation invariants are met
+    #[cfg(debug_assertions)]
     fn check_rep(&self) {
-        if !CHECK_REP {
-            return;
-        }
 
         // Check offsets
         for i in 0..self.nblocks() {
@@ -317,6 +313,7 @@ pub trait RankSelectQuotientFilter {
                 i -= 1;
             }
         }
+        #[cfg(debug_assertions)]
         self.check_rep();
     }
     /// Applies `f(quot, pos)` to all slots in the run associated with `quot`.
@@ -367,6 +364,7 @@ pub trait RankSelectQuotientFilter {
                 }
             }
         }
+        #[cfg(debug_assertions)]
         self.check_rep();
     }
     /// Determines the quotient and runend of the last run to intersect
@@ -608,6 +606,7 @@ pub trait RankSelectQuotientFilter {
                     self.nslots(), quot/64, quot%64,
                 ),
         }
+        #[cfg(debug_assertions)]
         self.check_rep();
     }
 }
@@ -737,7 +736,6 @@ pub mod rsqf {
             self.blocks.push(b);
             self.nslots += 64;
             self.nblocks += 1;
-            self.check_rep();
         }
         fn inc_nelts(&mut self) {
             self.nelts += 1;
@@ -790,6 +788,7 @@ pub mod rsqf {
                     false
                 }
             };
+            #[cfg(debug_assertions)]
             self.check_rep();
             out
         }

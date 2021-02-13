@@ -27,17 +27,37 @@ pub trait RankSelectBlock: fmt::Debug {
     fn offset(&self) -> usize;
     fn inc_offset(&mut self);
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let offset = self.offset();
         let rems = (0..64)
-            .map(|x| format!("0x{:x}", self.remainder(x)))
+            .map(|i| {
+                let rem = format!("0x{:x}", self.remainder(i));
+                if i == offset {
+                    format!("{}|", rem)
+                } else {
+                    rem
+                }
+            })
             .collect::<Vec<String>>()
             .chunks(8)
             .map(|c| c.join(" "))
             .collect::<Vec<String>>();
+        let ends = (0..64)
+            .map(|i| {
+                let bit = (self.is_runend(i) as u32).to_string();
+                if i == offset {
+                    format!("{}|", bit)
+                } else {
+                    bit
+                }
+            })
+            .collect::<Vec<String>>()
+            .join("");
         f.debug_struct("Block")
-            .field("remainders", &rems)
-            .field("occupieds", &format_args!("[{:064b}]", self.occupieds().reverse_bits()))
-            .field("runends  ", &format_args!("[{:064b}]", self.runends().reverse_bits()))
-            .field("offset   ", &self.offset()).finish()
+            .field("remainders", &format_args!("{:#?}", rems))
+            .field("occupieds", &format_args!("{:064b}", self.occupieds()))
+            .field("runends  ", &format_args!("{}", ends))
+            .field("offset   ", &offset)
+            .finish()
     }
 }
 
@@ -660,8 +680,46 @@ pub mod rsqf {
                 rem
             }
         }
+        /// Query an element using its hash
+        fn raw_query(&self, quot: usize, rem: Rem) -> bool {
+            let out = if !self.is_occupied(quot) {
+                false
+            } else {
+                if let RankSelectResult::Full(mut loc) = self.rank_select(quot) {
+                    loop {
+                        // If matching remainder found, return true
+                        if self.remainder(loc) == rem {
+                            break true;
+                        }
+                        // Stop when l < 0, l < quot, or l is a runend
+                        if loc == 0 {
+                            break false;
+                        } else {
+                            loc -= 1;
+                            if loc < quot || self.is_runend(loc) {
+                                break false;
+                            }
+                        }
+                    }
+                } else {
+                    false
+                }
+            };
+            self.check_rep();
+            out
+        }
         /// Insert a (quot, rem) pair into filter
         fn raw_insert(&mut self, quot: usize, rem: Rem) {
+            self.check_rep();
+            // {
+            //     let next = min(quot/64 + 1, self.nblocks - 1);
+            //     eprintln!(
+            //         "Inserting quot={} (block_i={}, slot_i={}), rem={:x} into blocks[{},{}]={:#?}",
+            //         quot, quot/64, quot%64, rem, quot/64, next,
+            //         [self.block(quot/64), self.block(next)],
+            //     );
+            // }
+
             assert!(quot < self.nslots);
             self.nelts += 1;
 
@@ -720,40 +778,14 @@ pub mod rsqf {
         fn query(&mut self, elt: String) -> bool {
             let hash = self.hash(&elt[..]);
             let quot = self.calc_quot(hash);
-            let rem = self.calc_rem(hash); // TODO: get 0-th rem for now
-
-            let result = if !self.is_occupied(quot) {
-                false
-            } else {
-                if let RankSelectResult::Full(mut loc) = self.rank_select(quot) {
-                    loop {
-                        // If matching remainder found, return true
-                        if self.remainder(loc) == rem {
-                            break true;
-                        }
-                        // Stop when l < 0, l < quot, or l is a runend
-                        if loc == 0 {
-                            break false;
-                        } else {
-                            loc -= 1;
-                            if loc < quot || self.is_runend(loc) {
-                                break false;
-                            }
-                        }
-                    }
-                } else {
-                    false
-                }
-            };
-            self.check_rep();
-            result
+            let rem = self.calc_rem(hash);
+            self.raw_query(quot, rem)
         }
         fn insert(&mut self, elt: String) {
             let hash = self.hash(&elt[..]);
             let quot = self.calc_quot(hash);
             let rem = self.calc_rem(hash);
             self.raw_insert(quot, rem);
-            self.check_rep();
         }
     }
 
@@ -1923,6 +1955,46 @@ pub mod rsqf {
                 }
             }
             println!("FP rate: {}", (fps as f64)/(a as f64));
+        }
+        #[test]
+        fn test_false_neg_case_1() {
+            // quot=2887 (block_i=45, slot_i=7), rem=9, blocks[45]=Block {
+
+            let mut filter = RSQF::new(64, 4);
+            let rems = [
+                0xb, 0x2, 0xc, 0x5, 0x4, 0xa, 0xe, 0xf,
+                0x2, 0xd, 0x8, 0x0, 0x7, 0x0, 0x3, 0x2,
+                0xe, 0x6, 0x1, 0x6, 0xa, 0x4, 0x0, 0x4,
+                0xe, 0xe, 0x7, 0x1, 0x8, 0x1, 0x9, 0x7,
+                0xe, 0x1, 0xf, 0x1, 0xf, 0x8, 0xa, 0x5,
+                0x8, 0x3, 0x4, 0xc, 0x3, 0x2, 0x8, 0xc,
+                0x8, 0xe, 0xd, 0x7, 0xf, 0x0, 0x0, 0xb,
+                0x3, 0x8, 0x5, 0x0, 0x4, 0x2, 0x4, 0x2,
+            ];
+            let occs = 0b1000101111101110010001011111101111001111101111110010011011111001;
+            let ends = 0b0100110100011100101111111010010100010111101001101101011101011111;
+            let offset = 23;
+
+            let b = &mut filter.blocks[0];
+            b.remainders = rems;
+            b.occupieds = occs;
+            b.runends = ends;
+            b.offset = offset;
+
+            // for i in 0..64 {
+            //     let b = &mut filter.blocks[0];
+            //     b.remainders = rems;
+            //     b.occupieds = occs;
+            //     b.runends = ends;
+            //     b.offset = i;
+            //
+            //     if filter.raw_query(7, 0x9) {
+            //         eprintln!("Offset={} contains!", i)
+            //     }
+            // }
+
+            assert!(filter.raw_query(7, 0x9),
+                    "Filter doesn't contain word");
         }
         #[test]
         fn test_load() {

@@ -55,35 +55,6 @@ pub trait Arcd<I, O> {
 fn floor_log(x: u64) -> u32 {
     if x == 0 { 0 } // treat log(0) as 0
     else { 63 - x.leading_zeros() }
-    // this uses a compiler intrinsic, which i'm assuming is fast
-}
-
-/// Converts a letter to adapt bits
-///   len = floor(log2(letter + 1))
-///   bits = letter - (2^len - 1)
-pub fn to_bits(letter: u64) -> Ext {
-    let len = floor_log(letter+1) as usize;
-    if len == 0 {
-        Ext::None
-    } else {
-        Ext::Some {
-            bits: letter - ((1 << len) - 1),
-            len: len as usize
-        }
-    }
-}
-
-/// Converts adaptivity bits to a letter
-///   letter = 0                   if len=0
-///          = (2^len - 1) + bits  if len>0
-pub fn to_letter(bits: &Ext) -> u64 {
-    match *bits {
-        Ext::None => 0,
-        Ext::Some {bits, len} => {
-            assert_ne!(len, 0, "Length-less adaptivity bits should be None");
-            ((1 << len)-1) as u64 + bits
-        }
-    }
 }
 
 #[cfg(test)]
@@ -97,16 +68,6 @@ mod tests {
                        (i as f64).log2().floor() as u32,
                        "i={}",
                        i);
-        }
-    }
-    #[test]
-    fn test_conversions() {
-        for i in 0..1000 {
-            let bits = to_bits(i);
-            let letter = to_letter(&bits);
-            assert_eq!(i, letter,
-                       "l={} -> bits={:?} -> l={}",
-                       i, bits, letter);
         }
     }
 }

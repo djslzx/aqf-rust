@@ -25,17 +25,37 @@ pub trait RankSelectBlock: fmt::Debug {
     fn offset(&self) -> usize;
     fn inc_offset(&mut self);
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let offset = self.offset();
         let rems = (0..64)
-            .map(|x| format!("0x{:x}", self.remainder(x)))
+            .map(|i| {
+                let rem = format!("0x{:x}", self.remainder(i));
+                if i == offset {
+                    format!("{}|", rem)
+                } else {
+                    rem
+                }
+            })
             .collect::<Vec<String>>()
             .chunks(8)
             .map(|c| c.join(" "))
             .collect::<Vec<String>>();
+        let ends = (0..64)
+            .map(|i| {
+                let bit = (self.is_runend(i) as u32).to_string();
+                if i == offset {
+                    format!("{}|", bit)
+                } else {
+                    bit
+                }
+            })
+            .collect::<Vec<String>>()
+            .join("");
         f.debug_struct("Block")
-            .field("remainders", &rems)
-            .field("occupieds", &format_args!("[{:064b}]", self.occupieds().reverse_bits()))
-            .field("runends  ", &format_args!("[{:064b}]", self.runends().reverse_bits()))
-            .field("offset   ", &self.offset()).finish()
+            .field("remainders", &format_args!("{:#?}", rems))
+            .field("occupieds", &format_args!("{:064b}", self.occupieds()))
+            .field("runends  ", &format_args!("{}", ends))
+            .field("offset   ", &offset)
+            .finish()
     }
 }
 
@@ -64,6 +84,7 @@ pub trait RankSelectQuotientFilter {
     fn block(&self, i: usize) -> &Self::Block;
     fn mut_block(&mut self, i: usize) -> &mut Self::Block;
     fn add_block(&mut self);
+    fn inc_nelts(&mut self);
 
     // Received methods:
     // Metadata getters/setters
@@ -92,7 +113,9 @@ pub trait RankSelectQuotientFilter {
         self.mut_block(i/64).set_remainder(i%64, to);
     }
     /// Checks that representation invariants are met
+    #[cfg(debug_assertions)]
     fn check_rep(&self) {
+
         // Check offsets
         for i in 0..self.nblocks() {
             let b = self.block(i);
@@ -102,22 +125,25 @@ pub trait RankSelectQuotientFilter {
                 assert_eq!(
                     runend, RankSelectResult::Full(b_start + b.offset()),
                     "B[0] occupied => offset points to B[0]'s runend; blocks[{},{}]={:#?}",
-                    i, i + b.offset()/64, (i..i+b.offset()/64).map(|j| format!("{:#?}", self.block(j))),
+                    i, i + b.offset()/64,
+                    (i..=(i+b.offset()/64))
+                        .map(|j| self.block(j))
+                        .collect::<Vec<&Self::Block>>(),
                 );
             } else { // b[0] is unoccupied
                 if b.offset() == 0 {
                     if b.is_runend(0) {
                         assert_eq!(
                             runend, RankSelectResult::Full(b_start),
-                            "B[0] unoccupied, B.offset = 0, B.runend[0] = 1 => \
+                            "B[0] unoccupied, B.offset = 0, B[0] is runend => \
                              last prior run ends at B[0]; blocks[{}]={:#?}",
                             i, b,
                         );
                     } else {
                         assert_eq!(
                             runend, RankSelectResult::Empty,
-                            "B[0] unoccupied, B.offset = 0, B.runend[0] = 0 => \
-                             last prior run ends before B[0]; blocks[{}]={:#?}",
+                            "B[0] unoccupied, B.offset = 0, B[0] is not runend => \
+                             last prior run ends before B[0] (negative offset); blocks[{}]={:#?}",
                             i, b,
                         );
                     }
@@ -129,6 +155,18 @@ pub trait RankSelectQuotientFilter {
                         i, b
                     );
                 }
+            }
+        }
+        // Check that if offset is 0, there is no runend before the first occupied bit
+        // unless the runend is at 0
+        for i in 0..self.nblocks() {
+            let block = self.block(i);
+            if block.offset() == 0 && !block.is_runend(0) {
+                assert!(
+                    block.occupieds().trailing_zeros() <= block.runends().trailing_zeros(),
+                    "Block {}'s occupieds start later than its runends even though it has 0 offset; block={:#?}",
+                    i, block,
+                )
             }
         }
     }
@@ -200,44 +238,49 @@ pub trait RankSelectQuotientFilter {
         let mut block_i = x / 64;
         let slot_i = x % 64;
         let mut b = self.block(block_i);
-        let mut rank = bitrank(b.occupieds(), slot_i);
 
-        // Exit early when the result of rank_select would be in a prior block.
-        // This happens when
-        // (1) slot is unoccupied and
-        // (2) block offset is 0
-        // (3) there are no runs before the slot in the block
-        if !b.is_occupied(slot_i) && b.offset() == 0 && rank == 0 {
+        // Compute i + O_i where i = x - (x mod 64)
+        if !b.is_occupied(0) && b.offset() == 0 && !b.is_runend(0) {
+            // b[0] unoccupied, b.offset = 0, b[0] not a runend =>
+            // Negative offset (TODO: turn into helper fn)
+            if slot_i == 0 {
+                return RankSelectResult::Empty;
+            }
+        } else {
+            // Non-negative offset
+            if slot_i == 0 {
+                return RankSelectResult::Full(block_i * 64 + b.offset());
+            }
+            block_i += b.offset()/64;
+        }
+
+        // Handle overflowing offset (offset runs off the edge)
+        if block_i >= self.nblocks() {
+            return RankSelectResult::Overflow;
+        }
+        // Count the number of occupieds between i+1 (b.start+1) and j (x),
+        // excluding the (potential) quot at b[0] by subtracting off 1 if b[0] is occupied
+        let mut d = bitrank(b.occupieds(), slot_i) - (b.is_occupied(0) as u64);
+        // Advance offset to relevant value for the block that b.offset points to
+        let offset = b.offset() % 64;
+        b = self.block(block_i);
+
+        // Account for the runends in [0, offset]
+        d += bitrank(b.runends(), offset);
+
+        // If rank(Q.occupieds, x) == 0, then there's nothing to see here
+        if d == 0 {
             RankSelectResult::Empty
         } else {
-            // Skip ahead to the block that offset is pointing inside
-            let offset = b.offset() % 64;
-            block_i += b.offset() / 64;
-            // Handle overflowing offset (offset runs off the edge)
-            if block_i >= self.nblocks() {
-                return RankSelectResult::Overflow;
-            }
-            b = self.block(block_i);
-            // Account for the runends before the offset in the current block
-            rank += if offset > 0 {
-                bitrank(b.runends(), offset - 1)
-            } else {
-                0
-            };
-            // If rank(Q.occupieds, x) == 0, then there's nothing to see here
-            if rank == 0 {
-                RankSelectResult::Empty
-            } else {
-                // (rank-1) accounts for select's indexing from 0
-                match self.select_runend(block_i, (rank-1) as usize) {
-                    Some(loc) =>
-                        if loc < x {
-                            RankSelectResult::Empty
-                        } else {
-                            RankSelectResult::Full(loc)
-                        },
-                    None => RankSelectResult::Overflow,
-                }
+            // (rank-1) accounts for select's indexing from 0
+            match self.select_runend(block_i, (d -1) as usize) {
+                Some(loc) =>
+                    if loc < x {
+                        RankSelectResult::Empty
+                    } else {
+                        RankSelectResult::Full(loc)
+                    },
+                None => RankSelectResult::Overflow,
             }
         }
     }
@@ -270,6 +313,7 @@ pub trait RankSelectQuotientFilter {
                 i -= 1;
             }
         }
+        #[cfg(debug_assertions)]
         self.check_rep();
     }
     /// Applies `f(quot, pos)` to all slots in the run associated with `quot`.
@@ -320,6 +364,7 @@ pub trait RankSelectQuotientFilter {
                 }
             }
         }
+        #[cfg(debug_assertions)]
         self.check_rep();
     }
     /// Determines the quotient and runend of the last run to intersect
@@ -330,7 +375,8 @@ pub trait RankSelectQuotientFilter {
         let n = popcnt(b.occupieds());
         let mut q: usize;
         if n == 0 {
-            if b.offset() == 0 {
+            if b.offset() == 0 && !b.is_runend(0) {
+                // Negative offset b/c !b.occupied(0), b.offset=0, !b.is_runend(0)
                 return None
             } else {
                 q = match self.prev_quot(block_start) {
@@ -355,12 +401,10 @@ pub trait RankSelectQuotientFilter {
             // Otherwise, work backwards to find the first run whose runend
             // doesn't exceed the end of the block, then choose the run
             // after that one
-            let mut last_q;
-            let mut last_end;
             loop {
                 // Cache current (q, end)
-                last_q = q;
-                last_end = end;
+                let last_q = q;
+                let last_end = end;
                 // Get previous occupied pair
                 match self.prev_pair(q, end, block_i) {
                     Some((new_q, new_end)) => {
@@ -452,13 +496,12 @@ pub trait RankSelectQuotientFilter {
             self.set_runend(i+1, self.is_runend(i));
         }
         self.set_runend(a, false);
-        self.check_rep();
     }
-    /// Increment direct/indirect offsets with targets in [a,b]
+    /// Increment non-negative offsets with targets in [a,b]
     /// to reflect shifting remainders/runends in [a,b]
     fn inc_offsets(&mut self, a: usize, b: usize) {
         assert!(a < self.nslots() && b < self.nslots(),
-                "Parameters out of bounds: a={}, b={}, nslots={}",
+                "inc_nonneg_offsets: Parameters out of bounds: a={}, b={}, nslots={}",
                 a, b, self.nslots());
         // Exit early if invalid range
         if a > b {
@@ -466,66 +509,104 @@ pub trait RankSelectQuotientFilter {
         }
         // Start block_i at the first block after b, clamping it so it doesn't go off the end,
         // and work backwards
-        let mut block_i = min(b/64 + 1, self.nblocks() - 1);
-        loop {
-            // Account for direct/indirect offsets:
-            // If direct, b[0] is occupied and target = x + offset
-            // If indirect, b[0] is unoccupied and target = x + offset - 1
-            let block_start = block_i * 64;
+        let start = min(b/64 + 1, self.nblocks() - 1);
+        for block_i in (0..=start).rev() {
             let block = self.mut_block(block_i);
-            // If block_i == 0, then the offset must be direct, as there's no valid indirect target
-            if block_i == 0 && !block.is_occupied(0) {
-                break;
+            let block_start = block_i * 64;
+            // Skip this block if it has a negative offset
+            if !block.is_occupied(0) && block.offset() == 0 && !block.is_runend(0) {
+                continue;
             }
-            let target = block_start + block.offset() - if block.is_occupied(0) { 0 } else { 1 };
+            // Exit if the target for b.offset is before the interval;
+            // if it's within the interval, increment offset
+            let target = block_start + block.offset();
             if target < a {
-                // If we've stepped back far enough, exit
                 break;
             } else if target <= b {
-                // If a <= target <= b, increment offset
                 block.inc_offset();
             }
-            // If we're on the first block, we can't step back further: exit
-            if block_i == 0 {
-                break;
-            }
-            // Step back by one block
-            block_i -= 1;
         }
-        self.check_rep();
     }
-    /// Increment indirect offsets targeting loc for quot's run
-    fn inc_indirect_offsets(&mut self, quot: usize, loc: usize) {
-        assert!(loc < self.nslots() && quot < self.nslots(),
-                "Parameters out of bounds: quot={}, x={}",
-                quot, loc);
-        // Start block_i at the first block after b, clamping it so it doesn't go off the end
-        let mut block_i = min(loc/64 + 1, self.nblocks() - 1);
-        // Walk through backwards from the first block after b
-        loop {
-            if block_i == 0 { break; }
-            let block_start = block_i * 64;
-            let block = self.mut_block(block_i);
-            let target = block_start + block.offset() - 1;
-            // If we've stepped back far enough, exit
+    /// Increment non-negative offsets in response to the insertion of a new run
+    /// for quotient `quot` at slot `loc`.
+    ///
+    /// More concretely, this function increments _unowned_ offsets in blocks whose
+    /// first slot `s` is not after `quot`: `s >= quot`.
+    fn inc_offsets_for_new_run(&mut self, quot: usize, loc: usize) {
+        assert!(loc < self.nslots(),
+                "`loc` out of bounds: {}/{}",
+                loc, self.nslots());
+        // Start block_i at the first block after loc,
+        // clamping it so it doesn't go off the end
+        let start = min(loc/64 + 1, self.nblocks() - 1);
+        for i in (0..=start).rev() {
+            let b = self.mut_block(i);
+            let b_start = i * 64;
+            // Skip this block if it has a negative offset
+            if !b.is_occupied(0) && b.offset() == 0 && !b.is_runend(0) {
+                continue;
+            }
+            // Exit if the target for b.offset is before the interval;
+            // if it's within the interval, increment offset
+            let target = b_start + b.offset();
             if target < loc {
                 break;
+            } else if target == loc && !b.is_occupied(0) && quot <= b_start {
+                b.inc_offset();
             }
-            // If target == loc, b[0] isn't occupied (offset is indirect),
-            // and quot < block_start (indirect offsets target runends
-            // that start in earlier blocks)
-            if target == loc && !block.is_occupied(0) && quot < block_start {
-                block.inc_offset();
-            }
-            if block_i == 0 {
-                // If we're on the first block, we can't step back further: exit
-                break;
-            } else {
-                // Step back by one block
-                block_i -= 1;
-            }
-
         }
+    }
+    /// Insert a (quot, rem) pair into filter
+    fn raw_insert(&mut self, quot: usize, rem: Rem) {
+        assert!(quot < self.nslots());
+        self.inc_nelts();
+
+        // Find the appropriate runend
+        match self.rank_select(quot) {
+            RankSelectResult::Empty => {
+                // Insert a new singleton run at its home slot
+                // (Doesn't need to modify offsets)
+                self.set_occupied(quot, true);
+                self.set_runend(quot, true);
+                self.set_remainder(quot, rem);
+            }
+            RankSelectResult::Full(r) => {
+                // Find u, the first open slot after r, and
+                // shift everything in [r+1, u-1] forward by 1 into [r+2, u],
+                // leaving r+1 writable
+                let u = match self.first_unused_slot(r+1) {
+                    Some(loc) => loc,
+                    None => {
+                        // Extend the filter by one block
+                        // and return the first empty index
+                        self.add_block();
+                        self.nslots() - 64
+                    }
+                };
+                self.inc_offsets(r+1, u-1);
+                self.shift_remainders_and_runends(r+1, u-1);
+                // Start a new run or extend an existing one
+                if self.is_occupied(quot) {
+                    // quot occupied: extend an existing run
+                    self.inc_offsets(r, r);
+                    self.set_runend(r, false);
+                    self.set_runend(r+1, true);
+                    self.set_remainder(r+1, rem);
+                } else {
+                    // quot unoccupied: start a new run
+                    self.inc_offsets_for_new_run(quot, r);
+                    self.set_occupied(quot, true);
+                    self.set_runend(r+1, true);
+                    self.set_remainder(r+1, rem);
+                }
+            }
+            RankSelectResult::Overflow =>
+                panic!(
+                    "RSQF failed to find runend (nslots={}, quot=(block={}, slot={}))",
+                    self.nslots(), quot/64, quot%64,
+                ),
+        }
+        #[cfg(debug_assertions)]
         self.check_rep();
     }
 }
@@ -655,7 +736,9 @@ pub mod rsqf {
             self.blocks.push(b);
             self.nslots += 64;
             self.nblocks += 1;
-            self.check_rep();
+        }
+        fn inc_nelts(&mut self) {
+            self.nelts += 1;
         }
     }
 
@@ -680,70 +763,9 @@ pub mod rsqf {
                 rem
             }
         }
-        /// Insert a (quot, rem) pair into filter
-        fn raw_insert(&mut self, quot: usize, rem: Rem) {
-            assert!(quot < self.nslots);
-            self.nelts += 1;
-
-            // Find the appropriate runend
-            match self.rank_select(quot) {
-                RankSelectResult::Empty => {
-                    self.set_occupied(quot, true);
-                    self.set_runend(quot, true);
-                    self.set_remainder(quot, rem);
-                }
-                RankSelectResult::Full(r) => {
-                    // Find u, the first open slot after r, and
-                    // shift everything in [r+1, u-1] forward by 1 into [r+2, u],
-                    // leaving r+1 writable
-                    let u = match self.first_unused_slot(r) {
-                        Some(loc) => loc,
-                        None => {
-                            // Extend the filter by one block
-                            // and return the first empty index
-                            self.add_block();
-                            self.nslots - 64
-                        }
-                    };
-                    self.shift_remainders_and_runends(r+1, u-1);
-                    self.inc_offsets(r+1, u-1);
-                    // Start a new run or extend an existing one
-                    if !self.is_occupied(quot) {
-                        // Set occupied, add runend, add rem, shift indirect offsets
-                        self.set_occupied(quot, true);
-                        self.set_runend(r+1, true);
-                        self.set_remainder(r+1, rem);
-                        self.inc_indirect_offsets(quot, r);
-                    } else {
-                        // Don't need to set occupied
-                        // Shift runend, add rem, shift offsets
-                        self.set_runend(r, false);
-                        self.set_runend(r+1, true);
-                        self.set_remainder(r+1, rem);
-                        self.inc_offsets(r, r);
-                    }
-                }
-                RankSelectResult::Overflow =>
-                    panic!(
-                        "RSQF failed to find runend (nslots={}, quot=(block={}, slot={}))",
-                        self.nslots, quot/64, quot%64,
-                    ),
-            }
-            self.check_rep();
-        }
-        /// Computes filter load factor
-        pub fn load(&self) -> f64 {
-            (self.nelts as f64)/(self.nslots as f64)
-        }
-    }
-
-    impl Filter<String> for RSQF {
-        fn query(&mut self, elt: String) -> bool {
-            let hash = self.hash(&elt[..]);
-            let quot = self.calc_quot(hash);
-            let rem = self.calc_rem(hash); // TODO: get 0-th rem for now
-
-            let result = if !self.is_occupied(quot) {
+        /// Query an element using its hash
+        fn raw_query(&self, quot: usize, rem: Rem) -> bool {
+            let out = if !self.is_occupied(quot) {
                 false
             } else {
                 if let RankSelectResult::Full(mut loc) = self.rank_select(quot) {
@@ -766,15 +788,28 @@ pub mod rsqf {
                     false
                 }
             };
+            #[cfg(debug_assertions)]
             self.check_rep();
-            result
+            out
+        }
+        /// Computes filter load factor
+        pub fn load(&self) -> f64 {
+            (self.nelts as f64)/(self.nslots as f64)
+        }
+    }
+
+    impl Filter<String> for RSQF {
+        fn query(&mut self, elt: String) -> bool {
+            let hash = self.hash(&elt[..]);
+            let quot = self.calc_quot(hash);
+            let rem = self.calc_rem(hash);
+            self.raw_query(quot, rem)
         }
         fn insert(&mut self, elt: String) {
             let hash = self.hash(&elt[..]);
             let quot = self.calc_quot(hash);
             let rem = self.calc_rem(hash);
             self.raw_insert(quot, rem);
-            self.check_rep();
         }
     }
 
@@ -873,8 +908,8 @@ pub mod rsqf {
                 }
             }
         }
-        #[test] //expensive test (~1.5s)
-        #[ignore]
+        #[test]
+        #[ignore] // expensive test (~1.5s)
         fn test_prev_q_triple() {
             // Three quotients at i <= j <= k
             let nslots = 64*3;
@@ -964,8 +999,8 @@ pub mod rsqf {
                 }
             }
         }
-        #[ignore] //expensive
         #[test]
+        #[ignore] //expensive
         fn test_prev_end_triple() {
             // Three quotients at i <= j <= k
             {
@@ -1027,15 +1062,15 @@ pub mod rsqf {
             // Block with an intersecting run from an earlier block
             for i in 0..64 {
                 let mut filter = RSQF::new(64*3, 4);
-                // run spanning two blocks
+                // Run: [i, [i, i+64]]
                 filter.set_occupied(i, true);
                 filter.set_runend(i+64, true);
                 filter.blocks[0].offset = if i == 0 { 64 } else { 0 };
-                filter.blocks[1].offset = i+1;
-                for j in 0..2 {
-                    assert_eq!(filter.last_intersecting_run(j),
+                filter.blocks[1].offset = i;
+                for block_i in 0..=1 {
+                    assert_eq!(filter.last_intersecting_run(block_i),
                                Some((i, i+64)),
-                               "i={}", i);
+                               "i={}, block_i={}", i, block_i);
                 }
             }
         }
@@ -1044,14 +1079,14 @@ pub mod rsqf {
             // Block completely covered by a run from an earlier block
             for i in 0..64 {
                 let mut filter = RSQF::new(64*3, 4);
-                // run spanning three blocks
+                // Run spanning three blocks: [i: [i, i+128]]
                 filter.set_occupied(i, true);
                 filter.set_runend(i+128, true);
                 filter.blocks[0].offset = if i == 0 { 128 } else { 0 };
-                filter.blocks[1].offset = i+64+1;
-                filter.blocks[2].offset = i+1;
-                for j in 0..3 {
-                    assert_eq!(filter.last_intersecting_run(j),
+                filter.blocks[1].offset = i+64;
+                filter.blocks[2].offset = i;
+                for block_i in 0..=2 {
+                    assert_eq!(filter.last_intersecting_run(block_i),
                                Some((i, i+128)));
                 }
             }
@@ -1067,14 +1102,14 @@ pub mod rsqf {
             // (2) Run between block 0 and block 1 [16,64]
             filter.set_occupied(16, true);
             filter.set_runend(64, true);
-            filter.blocks[1].offset = 1; // slot after 64
+            filter.blocks[1].offset = 0;
             // (3) Run in only block 1 [65, 69]
             filter.set_occupied(65, true);
             filter.set_runend(69, true);
             // (4) Run going from block 1 to 2 [127, 132]
             filter.set_occupied(127, true);
             filter.set_runend(132, true);
-            filter.blocks[2].offset = 5; // slot after 132
+            filter.blocks[2].offset = 4;
             // (5) Run in only block 2 [129, 135]
             filter.set_occupied(129, true);
             filter.set_runend(135, true);
@@ -1113,7 +1148,7 @@ pub mod rsqf {
             // Run from end of b0 to start of b1 [60: [60, 68]]
             filter.set_occupied(60, true);
             filter.set_runend(68, true);
-            filter.blocks[1].offset = 5;
+            filter.blocks[1].offset = 4;
             // Run in b1 [64: [69,76]]
             filter.set_occupied(64, true);
             filter.set_runend(76, true);
@@ -1127,7 +1162,7 @@ pub mod rsqf {
             // Run in b1 [120: [127,129]]
             filter.set_occupied(120, true);
             filter.set_runend(129, true);
-            filter.blocks[2].offset = 2;
+            filter.blocks[2].offset = 1;
 
             let runs = apply_collect_runs(&mut filter, 1);
             //println!("runs={:#?}", runs);
@@ -1157,24 +1192,24 @@ pub mod rsqf {
             // (1) Run from block 0 to 1 [10: [10,70]]
             filter.set_occupied(10, true);
             filter.set_runend(70, true);
-            filter.blocks[1].offset = 7; // slot after 70
+            filter.blocks[1].offset = 6;
             // (2) Run from block 0 to 1 [20: [71,80]
             filter.set_occupied(20, true);
             filter.set_runend(80, true);
-            filter.blocks[1].offset = 17; // slot after 80
+            filter.blocks[1].offset = 16;
             // (3) Run from block 0 to block 2 [30:[81,130]]
             filter.set_occupied(30, true);
             filter.set_runend(130, true);
-            filter.blocks[1].offset = 67; // slot after 130
-            filter.blocks[2].offset = 3;
+            filter.blocks[1].offset = 66;
+            filter.blocks[2].offset = 2;
             // (4) Run from block 1 to block 2 [65: [131]]
             filter.set_occupied(65, true);
             filter.set_runend(131, true);
-            filter.blocks[2].offset = 4;
+            filter.blocks[2].offset = 3;
             // (5) Run from block 1 to block 2 [120: [132]]
             filter.set_occupied(120, true);
             filter.set_runend(132, true);
-            filter.blocks[2].offset = 5;
+            filter.blocks[2].offset = 4;
 
             assert_eq!(
                 filter.last_intersecting_run(0),
@@ -1202,9 +1237,6 @@ pub mod rsqf {
 
             // Empty filter
             {
-                b = &mut filter.blocks[0];
-                b.occupieds = 0;
-                b.runends = 0;
                 assert_eq!(filter.select_runend(0, 0), None);
             }
             // Filter with one run
@@ -1212,14 +1244,16 @@ pub mod rsqf {
                 b = &mut filter.blocks[0];
                 b.occupieds = 1;
                 b.runends = 1;
+                b.offset = 0;
                 assert_eq!(filter.select_runend(0, 0), Some(0));
             }
             // Filter with multiple runs
             {
                 b = &mut filter.blocks[0];
                 // First two runs each have two elts, third run has one elt
-                b.occupieds = 0b1101;
-                b.runends  = 0b11010;
+                b.occupieds = 0b01101;
+                b.runends   = 0b11010;
+                b.offset    = 1;
                 assert_eq!(filter.select_runend(0, 0), Some(1));
                 assert_eq!(filter.select_runend(0, 1), Some(3));
                 assert_eq!(filter.select_runend(0, 2), Some(4));
@@ -1233,12 +1267,11 @@ pub mod rsqf {
             // Filter with run starting in block 0 and ending in block 1
             {
                 let b0 = &mut filter.blocks[0];
-                b0.occupieds = 1;
-                b0.runends = 0;
+                b0.set_occupied(0, true);
 
                 let b1 = &mut filter.blocks[1];
-                b1.occupieds = 0;
-                b1.runends = 1;
+                b1.set_runend(0, true);
+                b1.offset = 0;
 
                 assert_eq!(filter.select_runend(0, 0), Some(64));
                 assert_eq!(filter.select_runend(1, 0), Some(64));
@@ -1250,12 +1283,13 @@ pub mod rsqf {
             {
                 let b0 = &mut filter.blocks[0];
                 b0.occupieds = 0b11;
-                b0.runends = 0b01;
+                b0.runends   = 0b01;
+                b0.offset    = 0;
 
                 let b1 = &mut filter.blocks[1];
                 b1.occupieds = 0b10;
-                b1.runends = 0b11;
-                b1.offset = 1;
+                b1.runends   = 0b11;
+                b1.offset    = 0;
 
                 assert_eq!(filter.select_runend(0, 0), Some(0));
                 assert_eq!(filter.select_runend(0, 1), Some(64));
@@ -1269,27 +1303,31 @@ pub mod rsqf {
 
             // Empty filter
             {
-                // No setup needed: filter blank by default
                 for i in 0..64 {
                     assert_eq!(filter.rank_select(i), RankSelectResult::Empty)
                 }
             }
-            // Filter with one run
+            // Filter with one singleton run
             {
-                let b = &mut filter.blocks[0];
-                b.occupieds = 1;
-                b.runends = 1;
-                assert_eq!(filter.rank_select(0), RankSelectResult::Full(0));
-                for i in 1..64 {
-                    assert_eq!(filter.rank_select(i), RankSelectResult::Empty, "i={}", i);
+                for i in 0..64 {
+                    let b = &mut filter.blocks[0];
+                    b.set_occupied(i, true);
+                    b.set_runend(i, true);
+                    assert_eq!(filter.rank_select(i), RankSelectResult::Full(i));
+                    for j in (i+1)..64 {
+                        assert_eq!(filter.rank_select(j), RankSelectResult::Empty,
+                                   "i={}, j={}", i, j);
+                    }
                 }
+
             }
-            // Filter with multiple runs
+            // Filter with two runs
             {
                 let b = &mut filter.blocks[0];
                 // First two runs each have two elts, third run has one elt
                 b.occupieds = 0b101001;
                 b.runends   = 0b110010;
+                b.offset    = 1;
                 assert_eq!(filter.rank_select(0), RankSelectResult::Full(1));
                 assert_eq!(filter.rank_select(1), RankSelectResult::Full(1));
                 assert_eq!(filter.rank_select(2), RankSelectResult::Empty);
@@ -1306,17 +1344,14 @@ pub mod rsqf {
             // Filter with run starting in block 0 and ending in block 1
             let mut filter = RSQF::new(64*3, 4);
             let b0 = &mut filter.blocks[0];
-            b0.occupieds = 1;
-            b0.runends = 0;
-            b0.offset = 64;     // position of b0[0]'s runend
+            b0.set_occupied(0, true);
+            b0.offset = 64;
 
             let b1 = &mut filter.blocks[1];
-            b1.occupieds = 0;
-            b1.runends = 1;
-            b1.offset = 1;      // position where b1's first run's end should go,
-            // i.e., position after runend from b0
+            b1.set_runend(0, true);
+            b1.offset = 0;
 
-            for i in 0..64 {
+            for i in 0..=64 {
                 assert_eq!(filter.rank_select(i), RankSelectResult::Full(64), "i={}", i);
             }
             for i in 65..filter.nslots {
@@ -1325,27 +1360,45 @@ pub mod rsqf {
         }
         #[test]
         fn test_rank_select_multi_block_2() {
-            // Filter with two runs:
-            // A run starts in b0 and ends in b1, making b1 have nonzero offset
+            // Run 1: [0, [0]]
+            // Run 2: [1, [1,64]]
+            // Run 3: [65, [65, 68]]
+            // Run 4: [66, [69, 130]]
             let mut filter = RSQF::new(64*3, 4);
             let b0 = &mut filter.blocks[0];
-            b0.occupieds = 0b11;
-            b0.runends = 0b01;
+            b0.set_occupied(0, true); // start run 1
+            b0.set_runend(0, true);   // end run 1
             b0.offset = 0;
+            b0.set_occupied(1, true); // start run 2
 
             let b1 = &mut filter.blocks[1];
-            b1.occupieds = 0b10;
-            b1.runends = 0b11;
-            b1.offset = 1;
+            b1.set_runend(0, true);   // end run 2
+            b1.offset = 0;
+            b1.set_occupied(1, true); // start run 3
+            b1.set_runend(4, true);   // end run 3
+            b1.set_occupied(2, true); // start run 4
+
+            let b2 = &mut filter.blocks[2];
+            b2.set_runend(2, true);   // end of run 4
+            b2.offset = 2;
 
             assert_eq!(filter.rank_select(0), RankSelectResult::Full(0));
-            assert_eq!(filter.rank_select(1), RankSelectResult::Full(64));
-            for i in 2..65 {
-                assert_eq!(filter.rank_select(i), RankSelectResult::Full(64), "i={}", i);
+            for i in 1..=64 {
+                assert_eq!(filter.rank_select(i),
+                           RankSelectResult::Full(64),
+                           "i={}", i);
             }
-            assert_eq!(filter.rank_select(65), RankSelectResult::Full(65));
-            for i in 66..filter.nslots {
-                assert_eq!(filter.rank_select(i), RankSelectResult::Empty, "i={}", i);
+            assert_eq!(filter.rank_select(65),
+                       RankSelectResult::Full(68));
+            for i in 66..=130 {
+                assert_eq!(filter.rank_select(i),
+                           RankSelectResult::Full(130),
+                           "i={}", i);
+            }
+            for i in 131..filter.nslots {
+                assert_eq!(filter.rank_select(i),
+                           RankSelectResult::Empty,
+                           "i={}", i);
             }
         }
         #[test]
@@ -1387,17 +1440,17 @@ pub mod rsqf {
         /// Insert a single run [a,b] into a filter of 128 slots
         /// (doesn't handle overlaps with existing state)
         fn insert_run(filter: &mut RSQF, a: usize, b: usize) {
+            debug_assert!(a < 128 && b < 128);
+
             // Setup filter
             filter.set_occupied(a, true);
             filter.set_runend(b, true);
-            // Set offset
+            // Set offsets
             if a == 0 {
-                // Set first block's offset if a = 0
                 filter.blocks[0].offset = b;
             }
-            if a < 64 && b >= 64 {
-                // Set second block's offset if a in B[0] and b in B[1]
-                filter.blocks[1].offset = b-63;
+            if a == 64 || (a < 64 && b >= 64) {
+                filter.blocks[1].offset = b-64;
             }
         }
         #[test]
@@ -1438,6 +1491,8 @@ pub mod rsqf {
 
             // Test first_unused_slot for runs [a,b] and [c,d] nonoverlapping
             let test_two_runs = |a: usize, b: usize, c: usize, d: usize| {
+                debug_assert!(a < b && b < c && c < d);
+
                 let mut filter = RSQF::new(nslots, 4);
                 insert_run(&mut filter, a, b);
                 insert_run(&mut filter, c, d);
@@ -1469,7 +1524,7 @@ pub mod rsqf {
                                 None
                             }
                         },
-                        "r1=[{}, {}], r2=[{}, {}], i={}, filter={:?}",
+                        "r1=[{}, {}], r2=[{}, {}], i={}, filter={:#?}",
                         a, b, c, d, i, filter,
                     );
                 }
@@ -1607,88 +1662,120 @@ pub mod rsqf {
             }
         }
         fn offset_state_init() -> RSQF {
-            let mut filter = RSQF::new(64*4, 4);
+            // TODO: better represent important test cases for new offset handling
+            //  - negative offset
+            //  - zero offset
+            //    - elt from prior run at 0
+            //    - singleton run at 0
+            //  - positive offset
+            //    - end of prior run
+            //    - end of first run in block
+            let mut filter = RSQF::new(64*7, 4);
             let b = &mut filter.blocks;
-            // Run in b0: [0:(0,1)]
+            // Run in b0: [0:(0,0)]: zero offset, singleton run
             b[0].set_occupied(0, true);
-            b[0].set_runend(1, true);
-            b[0].offset = 1;          // direct offset
-            // Run in b0,b1: [63:(63,65)]
+            b[0].set_runend(0, true);
+            b[0].offset = 0;
+            // Run in b0,b1: [63:(63,64)]: zero offset, end of prior run
             b[0].set_occupied(63, true);
-            b[1].set_runend(1, true);
-            b[1].set_occupied(0, false);
-            b[1].offset = 2;          // indirect offset
+            b[1].set_runend(0, true);
+            b[1].offset = 0;
             // Run in b1: [67: (67,72)]
             b[1].set_occupied(3, true);
             b[1].set_runend(8, true);
             // Run in b1: [68: (73,73)]
             b[1].set_occupied(4, true);
             b[1].set_runend(9, true);
-            // Run from b1 to b3: [94: (192)]
-            b[1].set_occupied(30, true);
-            b[2].offset = 65;     // dist from 128 to 192+1 (indirect)
-            b[3].set_runend(0, true);
-            b[3].offset = 1;      // dist from 192 to 192+1 (indirect)
+            // Run in b1, b2: [69: (74,129)]: positive offset, end of prior run
+            b[1].set_occupied(5, true);
+            b[2].set_runend(1, true);
+            //b[2].offset = 1;
+            // Run in b1,b2: [80: (130,130)]: positive offset, end of prior run
+            b[1].set_occupied(16, true);
+            b[2].set_runend(2, true);
+            b[2].offset = 2;
+            // Run in b3: [192: (192, 194)]: positive offset, end of run at start of block
+            b[3].set_occupied(0, true);
+            b[3].set_runend(2, true);
+            b[3].offset = 2;
+            // Negative offset for b4
+            b[4].offset = 0;
+            // Run in b4,b6: [260: (260, 390)]: offset > 64
+            b[4].set_occupied(4, true);
+            b[6].set_runend(6, true);
+            b[5].offset = 70;
+            b[6].offset = 6;
 
             filter
         }
         #[test]
-        fn test_inc_offsets() {
+        fn test_inc_nonneg_offsets() {
             // Inc all offsets [0, n-2] -> [1, n-1]
             {
                 let mut filter = offset_state_init();
-                filter.inc_offsets(0, filter.nslots-2);
+                filter.inc_offsets(0, filter.nslots-1);
                 let b = filter.blocks;
-                assert_eq!(b[0].offset, 2);
-                assert_eq!(b[1].offset, 3);
-                assert_eq!(b[2].offset, 66);
-                assert_eq!(b[3].offset, 2);
+                assert_eq!(b[0].offset, 1);
+                assert_eq!(b[1].offset, 1);
+                assert_eq!(b[2].offset, 3);
+                assert_eq!(b[3].offset, 3);
+                assert_eq!(b[4].offset, 0);
+                assert_eq!(b[5].offset, 71);
+                assert_eq!(b[6].offset, 7);
             }
             // Inc ranges that nothing is pointing to
             {
                 let mut filter = offset_state_init();
-                let ranges = [(2,64), (66, 191), (193, 255)];
-                for (start,end) in ranges.iter() {
+                for (start, end) in [
+                    (1, 63),
+                    (65, 129),
+                    (131, 193),
+                    (195, 389),
+                    (391, 447)
+                ].iter() {
                     filter.inc_offsets(*start, *end);
                     let b = &filter.blocks;
                     // Check that for each inc_offsets call,
                     // none of the offsets are changed
-                    assert_eq!(b[0].offset, 1);
-                    assert_eq!(b[1].offset, 2);
-                    assert_eq!(b[2].offset, 65);
-                    assert_eq!(b[3].offset, 1);
+                    assert_eq!(b[0].offset, 0);
+                    assert_eq!(b[1].offset, 0);
+                    assert_eq!(b[2].offset, 2);
+                    assert_eq!(b[3].offset, 2);
+                    assert_eq!(b[4].offset, 0);
+                    assert_eq!(b[5].offset, 70);
+                    assert_eq!(b[6].offset, 6);
                 }
-            }
-            // Inc the elts that things are pointing to
-            {
-                let mut filter = offset_state_init();
-                filter.inc_offsets(1,1);
-                assert_eq!(filter.blocks[0].offset, 2);
-                assert_eq!(filter.blocks[1].offset, 2);
-                assert_eq!(filter.blocks[2].offset, 65);
-                assert_eq!(filter.blocks[3].offset, 1);
-                filter.inc_offsets(65,65);
-                assert_eq!(filter.blocks[0].offset, 2);
-                assert_eq!(filter.blocks[1].offset, 3);
-                assert_eq!(filter.blocks[2].offset, 65);
-                assert_eq!(filter.blocks[3].offset, 1);
-                filter.inc_offsets(192,192);
-                assert_eq!(filter.blocks[0].offset, 2);
-                assert_eq!(filter.blocks[1].offset, 3);
-                assert_eq!(filter.blocks[2].offset, 66);
-                assert_eq!(filter.blocks[3].offset, 2);
             }
         }
         #[test]
+        fn test_inc_nonneg_offsets_targeted() {
+            // Inc the elts that things are pointing to
+            fn inc_target_test(target: usize, offsets: [usize; 7]) {
+                let mut filter = offset_state_init();
+                filter.inc_offsets(target, target);
+                for i in 0..7 {
+                    assert_eq!(filter.blocks[i].offset, offsets[i]);
+                }
+            }
+            inc_target_test(0, [1, 0, 2, 2, 0, 70, 6]);
+            inc_target_test(64, [0, 1, 2, 2, 0, 70, 6]);
+            inc_target_test(130, [0, 0, 3, 2, 0, 70, 6]);
+            inc_target_test(194, [0, 0, 2, 3, 0, 70, 6]);
+            inc_target_test(390, [0, 0, 2, 2, 0, 71, 7]);
+        }
+        #[test]
         fn test_inc_offset_negative_target() {
-            // Check that target doesn't go negative (block_i == 0 and b[0][0] unoccupied)
-            let mut filter = RSQF::new(64, 4); // target is indirect
-            filter.inc_offsets(0,0);
+            // Check that target doesn't go negative (block_i == 0 and blocks[0][0] unoccupied)
+            let mut filter = RSQF::new(64, 4);
+            filter.inc_offsets(0, 0);
             assert_eq!(filter.blocks[0].offset, 0);
-            filter.blocks[0].set_occupied(0, true); // target is now direct
-            filter.inc_offsets(0,0);                // should bump up offset to 1
+
+            filter.blocks[0].set_occupied(0, true);
+            filter.blocks[0].set_runend(0, true);
+            filter.inc_offsets(0, 0);                // should bump up offset to 1
             assert_eq!(filter.blocks[0].offset, 1);
-            filter.inc_offsets(1,1);                // should bump up offset to 2
+
+            filter.inc_offsets(1, 1);                // should bump up offset to 2
             assert_eq!(filter.blocks[0].offset, 2);
 
             // Check for multi-block case
@@ -1697,65 +1784,21 @@ pub mod rsqf {
             assert_eq!(filter.blocks[0].offset, 0);
         }
         #[test]
-        fn test_inc_indirect_offsets() {
-            // Inc direct targets does nothing
-            {
-                let mut filter = offset_state_init();
-                filter.inc_indirect_offsets(0, 1);
-                assert_eq!(filter.blocks[0].offset, 1);
-                assert_eq!(filter.blocks[1].offset, 2);
-                assert_eq!(filter.blocks[2].offset, 65);
-                assert_eq!(filter.blocks[3].offset, 1);
-            }
-            // Inc indirect offsets but large quot does nothing
-            {
-                let mut filter = offset_state_init();
-                filter.inc_indirect_offsets(66, 65);
-                filter.inc_indirect_offsets(193, 192);
-                assert_eq!(filter.blocks[0].offset, 1);
-                assert_eq!(filter.blocks[1].offset, 2);
-                assert_eq!(filter.blocks[2].offset, 65);
-                assert_eq!(filter.blocks[3].offset, 1);
-            }
-            // Range with only indirect offsets does inc
-            {
-                let mut filter = offset_state_init();
-                filter.inc_indirect_offsets(0, 65);
-                filter.inc_indirect_offsets(0, 192);
-                assert_eq!(filter.blocks[0].offset, 1);
-                assert_eq!(filter.blocks[1].offset, 3);
-                assert_eq!(filter.blocks[2].offset, 66);
-                assert_eq!(filter.blocks[3].offset, 2);
-            }
-            // Range with both indirect/direct offsets
-            // only increments indirect offsets
-            {
-                let mut filter = offset_state_init();
-                for i in (0..filter.nslots).rev() {
-                    filter.inc_indirect_offsets(0, i);
-                }
-                assert_eq!(filter.blocks[0].offset, 1);
-                assert_eq!(filter.blocks[1].offset, 3);
-                assert_eq!(filter.blocks[2].offset, 66);
-                assert_eq!(filter.blocks[3].offset, 2);
-            }
-        }
-        #[test]
-        fn test_inc_indirect_offset_negative_target() {
-            // Shouldn't ever affect first block b/c first block
-            // can't have an indirect target
-            let mut filter = RSQF::new(64, 4);
-            filter.inc_offsets(0, 0);
-            assert_eq!(filter.blocks[0].offset, 0);
-
-            // Check for case where indirect offset
-            // points to run in previous block at slot 63
-            // This also tests our check for block_i == 0 in the loop
+        fn test_inc_offsets_zero_offset() {
+            // Check that zero offsets are incremented
             let mut filter = RSQF::new(128, 4);
-            filter.blocks[0].set_occupied(63, true);
-            filter.blocks[0].set_runend(63, true);
-            filter.inc_indirect_offsets(0, 63);
-            assert_eq!(filter.blocks[1].offset, 1);
+            let b = &mut filter.blocks;
+            // Run: [1: [1, 64]]
+            b[0].set_occupied(1, true);
+            b[1].set_runend(0, true);
+            b[0].offset = 0;
+            b[1].offset = 0;
+            eprintln!("Before inc offset, filter={:#?}", filter);
+            filter.inc_offsets(64, 64);
+            eprintln!("After inc offset, filter={:#?}", filter);
+            let b = &mut filter.blocks;
+            assert_eq!(b[0].offset, 0);
+            assert_eq!(b[1].offset, 1);
         }
         // Checks if x is a power of 2
         fn is_pow_2(x: usize) -> bool {
@@ -1773,8 +1816,8 @@ pub mod rsqf {
                 }
             }
             // Check offsets
-            assert_eq!(filter.blocks[0].offset, 0); // indirect offset b/c b[0][0] empty
-            assert_eq!(filter.blocks[1].offset, 0); // direct offset b/c b[1][0] has 1-elt run
+            assert_eq!(filter.blocks[0].offset, 0);
+            assert_eq!(filter.blocks[1].offset, 0);
             // Check occupieds/runends
             for i in 1..filter.nslots {
                 assert_eq!(filter.is_occupied(i), is_pow_2(i));
@@ -1793,10 +1836,10 @@ pub mod rsqf {
                 let mut filter = RSQF::new(64*3, 4);
                 let b = &mut filter.blocks;
                 b[0].set_occupied(0, true);
-                b[0].offset = 130;      // direct offset
-                b[1].offset = 130-64+1; // indirect offset
-                b[2].offset = 3;        // indirect offset
                 b[2].set_runend(2, true);
+                b[0].offset = 130;
+                b[1].offset = 130-64;
+                b[2].offset = 130-128;
                 for i in 0..=130 {
                     filter.set_remainder(i, i as Rem);
                 }
@@ -1866,14 +1909,36 @@ pub mod rsqf {
         fn test_raw_insert_repeated() {
             let n = 1 << 10;
             let mut filter = RSQF::new(n, 4);
-            for i in 0..n {
+            for _ in 0..n {
                 filter.insert("apple".to_string());
                 assert!(filter.query("apple".to_string()));
-                // if i % 1000 == 0 {
-                //     println!("i={}", i);
-                // }
             }
             println!("filter={:#?}", filter);
+        }
+        #[test]
+        fn test_raw_insert_zero_offset() {
+            // Check that zero offsets are incremented
+            // Run from 1 to 64, insert 2 elts at 0 to shift runend
+            let mut filter = RSQF::new(128, 4);
+            let b = &mut filter.blocks;
+            b[0].set_occupied(1, true);
+            b[1].set_runend(0, true);
+            for i in 1..=64 {
+                filter.set_remainder(i, 0xf);
+            }
+
+            //eprintln!("before insert, filter={:#?}", filter);
+            filter.raw_insert(0, 0xa);
+            eprintln!("after insert a, filter={:#?}", filter);
+            filter.raw_insert(0, 0xb);
+            eprintln!("after insert b, filter={:#?}", filter);
+            let b = &mut filter.blocks;
+            assert!(b[0].is_occupied(0), "Insert sets quotient");
+            assert!(b[0].is_occupied(1), "Insert keeps quotient");
+            assert!(b[0].is_runend(1), "Runend set for quot=0");
+            assert!(!b[1].is_runend(0), "Runend shifted (unset)");
+            assert!(b[1].is_runend(1), "Runend shifted (set)");
+            assert_eq!(b[1].offset, 1, "Offset shifted");
         }
         #[test]
         fn test_insert_and_query() {
@@ -1898,12 +1963,62 @@ pub mod rsqf {
             for i in 0..a {
                 let elt = &i.to_string();
                 if set.contains(elt) {
-                    assert!(filter.query(elt.clone()), "elt={}", elt);
+                    if !filter.query(elt.clone()) {
+                        let hash = filter.hash(&elt.clone());
+                        let quot = filter.calc_quot(hash);
+                        let rem = filter.calc_rem(hash);
+                        panic!(
+                            "False negative: set contains elt={}, but filter doesn't; \
+                             quot={} (block_i={}, slot_i={}), rem={:x}, blocks[{}]={:#?}",
+                            elt, quot, quot/64, quot%64, rem, quot/64, filter.block(quot/64),
+                        );
+                    }
+
                 } else {
                     fps += filter.query(elt.clone()) as usize;
                 }
             }
             println!("FP rate: {}", (fps as f64)/(a as f64));
+        }
+        #[test]
+        fn test_false_neg_case_1() {
+            // quot=2887 (block_i=45, slot_i=7), rem=9, blocks[45]=Block {
+
+            let mut filter = RSQF::new(64, 4);
+            let rems = [
+                0xb, 0x2, 0xc, 0x5, 0x4, 0xa, 0xe, 0xf,
+                0x2, 0xd, 0x8, 0x0, 0x7, 0x0, 0x3, 0x2,
+                0xe, 0x6, 0x1, 0x6, 0xa, 0x4, 0x0, 0x4,
+                0xe, 0xe, 0x7, 0x1, 0x8, 0x1, 0x9, 0x7,
+                0xe, 0x1, 0xf, 0x1, 0xf, 0x8, 0xa, 0x5,
+                0x8, 0x3, 0x4, 0xc, 0x3, 0x2, 0x8, 0xc,
+                0x8, 0xe, 0xd, 0x7, 0xf, 0x0, 0x0, 0xb,
+                0x3, 0x8, 0x5, 0x0, 0x4, 0x2, 0x4, 0x2,
+            ];
+            let occs = 0b1000101111101110010001011111101111001111101111110010011011111001;
+            let ends = 0b0100110100011100101111111010010100010111101001101101011101011111;
+            let offset = 23;
+
+            let b = &mut filter.blocks[0];
+            b.remainders = rems;
+            b.occupieds = occs;
+            b.runends = ends;
+            b.offset = offset;
+
+            // for i in 0..64 {
+            //     let b = &mut filter.blocks[0];
+            //     b.remainders = rems;
+            //     b.occupieds = occs;
+            //     b.runends = ends;
+            //     b.offset = i;
+            //
+            //     if filter.raw_query(7, 0x9) {
+            //         eprintln!("Offset={} contains!", i)
+            //     }
+            // }
+
+            assert!(filter.raw_query(7, 0x9),
+                    "Filter doesn't contain word");
         }
         #[test]
         fn test_load() {

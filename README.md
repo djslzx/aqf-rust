@@ -3,26 +3,6 @@ An implementation of the Adaptive Quotient Filter (AQF) in Rust.
 
 &copy; David J. Lee, 2021.
 
-## TODO
-- Remote representation
-  - [x] Add remote representation
-  - [ ] Test remote rep (can't do yet until we start adapting)
-- Arithmetic coding and fingerprint extensions
-  - [x] Transcribe old arithmetic coding (tested)
-  - [x] Write functions translating between fingerprint extension bits and the letters used in the arithmetic code (tested)
-  - [x] Write new arithmetic coding (optimized for new probability distribution)
-  - [ ] Integrate changes into `aqf` module
-    - [ ] adapt a remainder
-      - add/extend an extension until it doesn't clash with the elt causing a false pos
-- Testing
-  - [ ] Add integration tests (adversary, file-based, etc.)
-- Organization
-  - [ ] Make RSQF a supertrait of Filter
-
-## To think about
-- Only store the hash in remote and ditch the word (comparing word to elt is potentially slow, faster to compare hashes)
-
-# Implementation notes
 ## Transitioning from C to Rust
 The logic is very close to that of the C implementation, with a few notable differences:
 
@@ -76,6 +56,33 @@ d = rank(Q.occupieds[i+1, j], j-i-1)
 O_j = select(Q.runends[i+O_i+1, end], d)
 ```
 `d` represents the number of occupied quotients in the interval `[i+1, j]`; that is, between `i` and `j` and excluding `i`. `O_j` is computed as the `d`-th runend in `Q` after `i+0_i`.
+
+### Insertions
+Insertions will modify offsets in different ways depending on whether an inserted element's home slot is empty and whether the inserted elements extend existing runs or create new ones.
+
+> #### We only increment non-negative offsets
+> At insert time, we only increment those offsets that are already non-negative.  A negative offset will either remain negative or become zero, but because zero offsets and negative offsets are represented the same way (as zeros), we need not track this transition explicitly.
+
+> #### Owned and unowned offsets
+> If a block `B`'s offset points to the runend for `B[0]`, then we call `B.offset` _owned_.  If, instead, `B`'s offset points to the runend of the last runend in a block before `B`, then we say that `B.offset` is _unowned_.
+>
+> We can distinguish owned from unowned offsets by checking whether `B[0]` is occupied.
+> If it is occupied, then `B.offset` is owned; otherwise, it is unowned.
+
+Let `x` be the element we are inserting, with `q = quot(x)`. 
+
+If the home slot `q` is empty, then there is no runend at `q`, so there can't be a non-negative offset pointing to it (because non-negative offsets must point to runends).  Therefore, we don't need to increment offsets in this case.
+
+If the home slot `q` is taken, then we need to lookup the appropriate location to insert into.  First, we find the runend `r = rank_select(q)`.  
+
+If `q` is occupied, then `r` marks the end of `q`'s run.  Inserting `x` means extending this run with `rem(x)`.  We first make room for `rem(x)` by finding `u`, the first unused slot after `r`, and shifting forward (by 1) the remainders and runends in the interval `[r+1, u-1]`, updating offsets with targets in this interval. Now that slot `r+1` is open, we insert `rem(x)` at `r+1`: we shift the runend bit at `r` to `r+1` and increment any non-negative offsets formerly pointing to `r`.
+
+If `q` is unoccupied, then `r` marks the end of the last run before `q`. Here, inserting `x` means adding a new run.  As in the previous case, we make room for `rem(x)` at `r+1` by shifting runends and remainders and updating offsets.  Next, we handle offsets previously pointing to `r` in the following manner:
+  - If the offset is owned, then don't increment it. Call the offset `o` and let `B` be the block it belongs to.  `o` being owned means that `r` is the index of the end of the run starting at `B.start`.  Adding a new run at `r+1` should not affect `B`'s offset.
+  - If the offset is unowned, then:
+    - If `q < B.start` for `B` the block containing `o`, then increment.  This condition must be met for `B.offset` to be affected by `q`'s runend.
+    - If `q = B.start`, then increment.  Adding a new run for `B[0]` should set `B.offset` to `r+1`.  Because it was previously pointing to `r`, this means that incrementing `B.offset` will set it to the correct value.
+    - If `q > B.start`, don't increment.  A run for a quotient after `B` should not affect `B.offset`.
 
 ## Handling fingerprint collisions
 
@@ -146,30 +153,28 @@ I've chosen to go with the latter approach because it gives us better locality a
 In pseudocode, where `Q` is the filter, `B` is the block of interest, and `block_i` is the index of the block: 
 ```
 let B = Q.blocks[block_i]
-let (q, end) = last_intersecting_run(block_i)
-let i = end
+let (q, i) = last_intersecting_run(block_i)
+
 // skip backward until we hit the block 
-// TODO: use rank and select?
-while i > block_start + 64:
+while i >= block_start + 64:
   i -= 1
   if Q.runend(i):
-    q = prev_q(q)
-  // q is a quotient that is in block B or any earlier block.
-  // therefore, if it is not intersecting B, that means that it
-  // must have been pushed over by another run; 
-  // so, if there's no runend between the end of B and q's runend,
-  // then the run for q overlaps with B.
-  loop quots:
-  loop slots:
-    if i < B.start + 64:
+    q = prev_quot(q)
+    // q is a quotient that is in block B or any earlier block.
+    // therefore, if it is not intersecting B, that means that it
+    // must have been pushed over by another run; 
+    // so, if there's no runend between the end of B and q's runend,
+    // then the run for q overlaps with B.
+  loop block:
+    loop run:
       update remote (q, Q.rem[i], Q.ext[i]) -> (q, Q.rem[i], none)
-    if i == B.start:
-      break quots
-    else if i == q or B.runend(i-1):
-      break slots
-    else:
-      i -= 1
-  (q, end) = prev_pair(q, end)
+      if i == B.start:
+        break block
+      else if i == q or Q.runend(i-1):
+        break run
+      else
+        i -= 1
+    (q, i) = prev_pair(q, i)
 
 clear B.extensions
 ```
@@ -189,13 +194,13 @@ After determining the location from which to start the search, jump backwards th
 
 ```
 // (1) Get start position of search
-let count = popcnt(B.occs)
-if count == 0:
-  if B.offset == 0: 
+let n = popcnt(B.occs)
+if n == 0:
+  if B.offset == 0 and B[0] is not a runend: 
     return None
-  else B.offset > 0:
+  else:
     let q = prev_q(B.start)
-else count > 0:
+else:
   let q = highest_set_bit(B.occs) // get last occupied quotient 
   //      ^ defined below, same as select(B.occs, count-1) in this context
   
@@ -206,59 +211,51 @@ if end <= B.start + 63:
 else:
   loop:
     let last_q = q, last_end = end     // store current (q, end)
-    match prev_pair(q, end, B.start):  // prev_pair uses rank-select and 
-                                       // returns None if no valid result found
-      Some(prev_q, prev_end) => 
-        (q, end) = (prev_q, prev_end)
-      None => return (last_q, last_end)
+    if prev_pair(q, end) gives None:    // prev_pair uses rank-select and 
+                                        // returns None if no valid result found
+      return last_q, last_end
+    else:
+      q, end = prev_pair(q, end)
+    
     if end < B.start + 63:
-      return Some(last_q, last_end)    // This doesn't ensure that the corresponding
-                                       // run overlaps the interval, but because we
-                                       // search backwards, this should be fine
+      return last_q, last_end
 ```
 
 #### `prev_pair(q, end, bound)`
 Uses rank and select to get the previous (quot, runend) pair given (`q`, `end`). As an optimization, exits early (returns None) if the previous pair's runend is before `bound`.
 
-```
-// assumes that q is occupied
-let B_i = end/64
-let B = blocks[B_i]
-let count = bitrank(B.ends, end%64)
-if count == 1:
-  loop:
-    B_i -= 1
-    B = blocks[B_i]
-    if B_i * 64 < bound:
-      return None
-    if B.ends != 0: // i.e., if there are any runends in block B
-      break
+This can be implemented straightforwardly by defining the helpers `prev_end(end, bound)` and `prev_q(q)`.
 
-// only bother computing prev_q if prev_end is a valid result
-// TODO: use concurrency to run prev_q in the background at the start
-//       of this function 
-let prev_end = B_i * 64 + highest_set_bit(B.ends)  
-match prev_q(q) {
-  Some(prev_q) => return Some(prev_q, prev_end),
-  None => panic!
+#### `prev_end(end, bound_i)`
+```
+let block_i = end/64
+let b = Q.blocks[block_i]
+let n = if end%64 == 0 then 0, else rank(b.runends, end%64 - 1)
+if n == 0:
+  for i in [block_i-1, bound_i]:
+    b = Q.blocks[i]
+    if b.runends > 0:
+      return i*64 + highest_set_bit(b.runends)
+  return None
+else:
+  return block_i * 64 + select(b.runends, n-1)
 ```
 
 #### `prev_q(q)`
 Gets the last occupied quotient (`q'`) before `q`, returning `Some(q')` if one exists and `None` if `q` is the first occupied quotient in the filter.
 
 ```
-// assumes that q is occupied
 let block_i = q/64
-let B = blocks[block_i]
-let n = bitrank(B.occs, q%64)
-if n == 1: // q is the only occupied quotient in the block 
+let b = Q.blocks[block_i]
+let n = if q%64 == 0 then 0, else rank(b.occupieds, q%64 - 1)
+if n == 0:
   for i in [block_i-1, 0]:
-    B = blocks[i]
-    if B.occs != 0:
-      return Some(i * 64 + highest_set_bit(B.occs))
-
-// for loop finished w/o finding nonzero occs => no prev quot found
-return None 
+    let b = Q.blocks[i]
+    if b.occupieds > 0:
+      return i*64 + highest_set_bit(b.occupieds)
+  return None
+else:
+  return i*64 + select(b.occupieds, n-1)
 ```
 
 #### `highest_set_bit(bits)`

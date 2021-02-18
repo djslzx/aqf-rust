@@ -96,16 +96,16 @@ In the AQF, we store both `A` and `B` in the remote representation, so that the 
 
 2. "Many-to-many": We store two copies of the pair `(q, r)` in the filter. This means that we need not perform additional inserts when a query collides with `(q, r)`.
 
-We go with the latter approach because it is simpler.
+We go with the latter approach because it doesn't require additional insertions at adapt time.
 
 ### Decision points
 
 There are a few key points in the code where we need to choose policies to deal with fingerprint collisions consistently.
 
 At query time, we need policies to determine the following:
- - _Whether a query fingerprint matches a stored fingerprint._ Our current policy is to find the first stored fingerprint whose quotient, remainder, and extension match that of the query fingerprint. This means that if stored fingeprints `f(a)` and `f(b)` share the same quotient and remainder, but `f(a)` has an extension and `f(b)` doesn't, such that `f(a) = q:r:e` and `f(b) = q:r:_`, then when querying with `a`, we may find `q:r:_` instead of `q:r:e`. 
+ - _Whether a query fingerprint matches a stored fingerprint._ Our current policy is to find the first stored fingerprint whose quotient, remainder, and extension match that of the query fingerprint. This means that if stored fingerprints `f(a)` and `f(b)` share the same quotient and remainder, but `f(a)` has an extension and `f(b)` doesn't, such that `f(a) = q:r:e` and `f(b) = q:r:_`, then when querying with `a`, we may find `q:r:_` instead of `q:r:e`. 
 
- - _Which remote elements are associated with a local element._ Once we have found a stored fingerprint `f(s)` that matches a query fingerprint `f(q)` of query element `q`, we need to determine whether `q` has been inserted into the filter (i.e., whether the result is a true or false positive) to determine whether we need to adapt.  This requires retrieving `S(f(s))`, the set of stored elements associated with `f(s)`, and seeing whether any `s` in `S(f(s))` matches `q`. Therefore, we need to define `S`, which maps from a stored fingerprint to its associated stored elements.
+ - _Which remote elements are associated with a local element._ Once we have found a stored fingerprint `f(s)` that matches a query fingerprint `f(q)` of query element `q`, we need to determine whether `q` is in the filter (i.e., whether the result is a true or false positive) to determine whether we need to adapt.  This requires retrieving `S(f(s))`, the set of stored elements associated with `f(s)`, and seeing whether any `s` in `S(f(s))` matches `q`. Therefore, we need to define `S`, which maps from a stored fingerprint to its associated stored elements.
 
 At adapt time, we need to determine the following:
  - _Which remote element to update._ If `q` does not match any element in `S(f(s))`, then we need to adapt.  But if there are multiple elements in `S(f(s))`, which of these elements should we extend the fingerprints of?

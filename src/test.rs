@@ -52,6 +52,8 @@ pub fn file_fpr_test(path: &str, n_uniq_lines: usize, a_s: f64, load: f64, rem_s
         let elt = lines.next().unwrap().to_string();
         set.insert(elt.clone());
         filter.insert(elt.clone());
+
+        // Check that set and filter don't have false negatives right after insertions
         assert!(set.contains(&elt.clone()),
                 "Set doesn't contain inserted elt={}", elt.clone());
         if !filter.query(elt.clone()) {
@@ -97,8 +99,9 @@ pub fn file_fpr_test(path: &str, n_uniq_lines: usize, a_s: f64, load: f64, rem_s
                 let rem = filter.calc_rem(hash);
                 let block = filter.block(quot/64);
                 panic!(
-                    "False negative on {}; quot={} (block_i={}, slot_i={}), rem=0x{:x}, block={:#?}",
-                    elt, quot, quot/64, quot%64, rem, block,
+                    "False negative on {}; quot={} (block_i={}, slot_i={}), rem=0x{:x}, block={:#?}\
+                     remote={:#?}",
+                    elt, quot, quot/64, quot%64, rem, block, filter.remote.data.get(&(quot, rem)),
                 );
             }
         }

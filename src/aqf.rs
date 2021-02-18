@@ -3,7 +3,9 @@ use std::{
     collections::HashMap,
     fmt,
 };
+#[macro_use]
 use crate::{
+    hashmap,
     Rem,
     Filter,
     util::{
@@ -112,7 +114,7 @@ mod remote {
     type Quot = usize;
 
     pub struct Remote<T> {
-        data: HashMap<(Quot, Rem), Vec<(Ext, T, u128)>>,
+        pub data: HashMap<(Quot, Rem), Vec<(Ext, T, u128)>>,
     }
     impl fmt::Debug for Remote<String> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -195,6 +197,82 @@ mod remote {
         }
         pub fn clear_ext(&mut self, quot: Quot, rem: Rem, ext: Ext) {
             self.update_ext(quot, rem, ext, Ext::None);
+        }
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn make_ext(len: usize) -> Ext {
+            if len == 0 {
+                Ext::None
+            } else {
+                Ext::Some {
+                    bits: 0,
+                    len,
+                }
+            }
+        }
+        fn make_elt(len: usize) -> String {
+            "a".repeat(len)
+        }
+
+        #[test]
+        fn test_add() {
+            let mut r = Remote::new();
+            r.add(0, 0, Ext::None, "a".to_string(), 0);
+            for i in 1..=3 {
+                r.add(1, 1, Ext::Some{bits: 0, len: i}, "b".repeat(i), 1);
+            }
+
+            assert_eq!(r.data, hashmap!(
+              (0,0) => vec![
+                (Ext::None, "a".to_string(), 0),
+              ],
+              (1,1) => vec![
+                (Ext::Some{bits: 0, len: 1}, "b".to_string(), 1),
+                (Ext::Some{bits: 0, len: 2}, "bb".to_string(), 1),
+                (Ext::Some{bits: 0, len: 3}, "bbb".to_string(), 1)
+              ]
+            ));
+        }
+        #[test]
+        fn test_contains() {
+            let mut r = Remote::new();
+            for i in 0..100 {
+                r.add(i, i as Rem, make_ext(i),
+                      make_elt(i), i as u128);
+            }
+            for i in 0..100 {
+                assert!(r.contains(i, i as Rem, make_ext(i),
+                                   &make_elt(i), i as u128));
+            }
+        }
+        #[test]
+        fn test_get() {
+            let mut r = Remote::new();
+            for i in 0..10 {
+                for j in 0..10 {
+                    r.add(i, i as Rem, make_ext(i),
+                          make_elt(j), j as u128);
+                }
+            }
+            for i in 0..10 {
+                assert_eq!(
+                  r.get(i, i as Rem, make_ext(i)),
+                  (0..10)
+                      .map(|j| (make_elt(j), j as u128))
+                      .collect::<Vec<(String, u128)>>()
+                );
+            }
+        }
+        #[test]
+        fn test_update_ext() {
+            let mut r = Remote::new();
+            r.add(0,0,Ext::None, "a".to_string(), 1);
+            r.update_ext(0, 0, Ext::None, Ext::Some{bits: 0, len: 1});
+            assert_eq!(r.get(0, 0, Ext::None), vec![]);
+            assert_eq!(r.get(0, 0, Ext::Some{bits: 0, len: 1}), vec![("a".to_string(), 1)])
         }
     }
 }

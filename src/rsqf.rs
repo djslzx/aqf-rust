@@ -115,7 +115,6 @@ pub trait RankSelectQuotientFilter {
     /// Checks that representation invariants are met
     #[cfg(debug_assertions)]
     fn check_rep(&self) {
-
         // Check offsets
         for i in 0..self.nblocks() {
             let b = self.block(i);
@@ -1981,6 +1980,7 @@ pub mod rsqf {
             println!("FP rate: {}", (fps as f64)/(a as f64));
         }
         #[test]
+        #[ignore]
         fn test_false_neg_case_1() {
             // quot=2887 (block_i=45, slot_i=7), rem=9, blocks[45]=Block {
 

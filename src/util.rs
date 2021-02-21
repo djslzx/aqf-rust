@@ -48,9 +48,15 @@ pub mod bitarr {
                 self::unset(x, at)
             }
         }
+        /// Get the position of the highest set bit in `x`
         pub fn highest_set_bit(x: u64) -> usize {
             debug_assert_ne!(x, 0);
             63 - (x.leading_zeros() as usize)
+        }
+        /// Get a bitmask where bits in [0, i-1] are set and all other bits are unset
+        pub fn mask(i: usize) -> u64 {
+            debug_assert!(i < 64);
+            (1 << i) - 1
         }
         #[cfg(test)]
         mod tests {

@@ -1,5 +1,5 @@
 use std::{
-    cmp::max,
+    cmp::{max, min},
     collections::HashMap,
     fmt,
 };
@@ -122,7 +122,7 @@ mod remote {
                 .entries(self.data.iter().map(|(&(q, r), vec)| {(
                     format!("{}, {}", q, r),
                     vec.iter()
-                        .map(|(e, s, h)| format!("{}, {}, {}", e, s, h))
+                        .map(|(e, s, h)| format!("{}, {}, {:x}", e, s, h))
                         .collect::<Vec<String>>()
                 )}))
                 .finish()
@@ -162,15 +162,26 @@ mod remote {
                 )
             }
         }
+        /// Returns true if `e1` and `e2` are consistent.
+        fn consistent(e1: Ext, e2: Ext) -> bool {
+            if let Ext::Some{bits: bits1, len: len1} = e1 {
+                if let Ext::Some{bits: bits2, len: len2} = e2 {
+                    let len = min(len1, len2);
+                    return (bits1 ^ bits2) & b64::mask(len) == 0;
+                }
+            }
+            true
+        }
         /// Returns the `(elt, hash)` pairs associated with a `(quot, rem, ext)` triple
-        pub fn get(&self, quot: Quot, rem: Rem, ext: Ext) -> Vec<(String, u128)> {
+        /// by choosing elements associated with `(quot, rem)` that are consistent with `ext`
+        pub fn get_consistent(&self, quot: Quot, rem: Rem, ext: Ext) -> Vec<(String, u128)> {
             match self.data.get(&(quot, rem)) {
                 None => Vec::new(),
                 Some(vec) => {
                     vec.iter()
-                        .filter_map(|(e, s, h)|
-                            if *e == ext {
-                                Some((s.clone(), *h))
+                        .filter_map(|(e, elt, hash)|
+                            if Remote::consistent(*e, ext) {
+                                Some((elt.clone(), *hash))
                             } else {
                                 None
                             })
@@ -203,7 +214,7 @@ mod remote {
     mod tests {
         use super::*;
 
-        fn make_ext(len: usize) -> Ext {
+        fn zero_ext(len: usize) -> Ext {
             if len == 0 {
                 Ext::None
             } else {
@@ -212,9 +223,6 @@ mod remote {
                     len,
                 }
             }
-        }
-        fn make_elt(len: usize) -> String {
-            "a".repeat(len)
         }
 
         #[test]
@@ -240,39 +248,97 @@ mod remote {
         fn test_contains() {
             let mut r = Remote::new();
             for i in 0..100 {
-                r.add(i, i as Rem, make_ext(i),
-                      make_elt(i), i as u128);
+                r.add(i, i as Rem, zero_ext(i),
+                      "a".repeat(i), i as u128);
             }
             for i in 0..100 {
-                assert!(r.contains(i, i as Rem, make_ext(i),
-                                   &make_elt(i), i as u128));
+                assert!(r.contains(i, i as Rem, zero_ext(i),
+                                   &"a".repeat(i), i as u128));
             }
         }
         #[test]
-        fn test_get() {
+        fn test_get_matching() {
             let mut r = Remote::new();
             for i in 0..10 {
                 for j in 0..10 {
-                    r.add(i, i as Rem, make_ext(i),
-                          make_elt(j), j as u128);
+                    r.add(i, i as Rem, zero_ext(i), "a".repeat(j), j as u128);
                 }
             }
             for i in 0..10 {
                 assert_eq!(
-                  r.get(i, i as Rem, make_ext(i)),
-                  (0..10)
-                      .map(|j| (make_elt(j), j as u128))
+                    r.get_consistent(i, i as Rem, zero_ext(i)),
+                    (0..10)
+                      .map(|j| ("a".repeat(j), j as u128))
                       .collect::<Vec<(String, u128)>>()
+                );
+            }
+        }
+        #[test]
+        fn test_consistent() {
+            assert!(Remote::consistent(Ext::None,
+                                       Ext::None));
+            assert!(Remote::consistent(Ext::None,
+                                       Ext::Some{bits: 0, len: 1}));
+            assert!(Remote::consistent(Ext::Some{bits: 0, len: 1},
+                                       Ext::None));
+            assert!(Remote::consistent(Ext::Some{bits: 0, len: 1},
+                                       Ext::Some{bits: 0, len: 10}));
+            assert!(Remote::consistent(Ext::Some{bits: 0b000010101, len: 5},
+                                       Ext::Some{bits: 0b111110101, len: 10}));
+            assert!(!Remote::consistent(Ext::Some{bits: 0b000010101, len: 6},
+                                        Ext::Some{bits: 0b111110101, len: 10}));
+            assert!(!Remote::consistent(Ext::Some{bits: 0, len: 1},
+                                        Ext::Some{bits: 1, len: 1}));
+        }
+        #[test]
+        fn test_get_consistent() {
+            // Insert elements with consistent but not matching fingerprints
+            // and make sure we retrieve the consistent ones
+            let mut r = Remote::new();
+            for i in 0..3 {
+                r.add(0, 0, zero_ext(i), "a".repeat(i), i as u128);
+            }
+            r.add(0, 0, Ext::Some{bits: 1, len: 1}, "b".to_string(), 0);
+
+            assert_eq!(
+                r.get_consistent(0, 0, Ext::None),
+                vec![
+                    ("a".repeat(0), 0),
+                    ("a".repeat(1), 1),
+                    ("a".repeat(2), 2),
+                    ("b".to_string(), 0)
+                ]
+            );
+            for i in 1..10 {
+                assert_eq!(
+                    r.get_consistent(0, 0, zero_ext(i)),
+                    (0..3)
+                        .map(|i| ("a".repeat(i), i as u128))
+                        .collect::<Vec<(String, u128)>>()
                 );
             }
         }
         #[test]
         fn test_update_ext() {
             let mut r = Remote::new();
-            r.add(0,0,Ext::None, "a".to_string(), 1);
-            r.update_ext(0, 0, Ext::None, Ext::Some{bits: 0, len: 1});
-            assert_eq!(r.get(0, 0, Ext::None), vec![]);
-            assert_eq!(r.get(0, 0, Ext::Some{bits: 0, len: 1}), vec![("a".to_string(), 1)])
+            r.add(0, 0, Ext::None, "a".to_string(), 1);
+            r.add(0, 0, Ext::None, "b".to_string(), 2);
+
+            // Update ext for one of a or b
+            r.update_ext(0, 0, zero_ext(0), zero_ext(1));
+            assert_eq!(*r.data.get(&(0, 0)).unwrap(),
+                       vec![
+                           (zero_ext(1), "a".to_string(), 1),
+                           (zero_ext(0), "b".to_string(), 2)
+                       ]);
+
+            // Remove ext for whichever of a or b was extended
+            r.update_ext(0, 0, Ext::Some{bits: 0, len: 1}, Ext::None);
+            assert_eq!(*r.data.get(&(0, 0)).unwrap(),
+                       vec![
+                         (zero_ext(0), "a".to_string(), 1),
+                         (zero_ext(0), "b".to_string(), 2)
+                       ]);
         }
     }
 }
@@ -352,12 +418,13 @@ impl AQF {
                       "Extension overflowed 64 bits at {}",
                       self.q + self.r + k <= 64);
         let hash = hash >> (self.q + self.r);
-        (hash & b128::half_open(0, k)) as u64
+        (hash & ((1 << k) - 1)) as u64
     }
     /// Generate the shortest extension from the member's hash that doesn't conflict with
     /// the non-member's hash. 
     /// `prev_ext` is the extension previously associated with the member's hash.
     fn shortest_diff_ext(&self, member_hash: u128, non_member_hash: u128) -> Ext {
+        // Shift to get rid of first q+r bits in both hashes
         let a = member_hash >> (self.q + self.r);
         let b = non_member_hash >> (self.q + self.r);
         if a == b {
@@ -366,7 +433,7 @@ impl AQF {
             // Find fewest LSBs needed to distinguish member from non-member hash:
             // Determine number of common LSBs and add 1
             let len = (a ^ b).trailing_zeros() + 1;
-            let bits = a & ((1 << len) - 1);
+            let bits = a & ((1 << len) - 1); // mask len bits from member hash
             Ext::Some {
                 bits: bits as u64,
                 len: len as usize,
@@ -377,11 +444,11 @@ impl AQF {
     fn adapt(&mut self, loc: usize, query_quot: usize, query_rem: Rem, query_hash: u128,
              pairs: Vec<(String, u128)>, block_exts: [Ext; 64]) {
         let mut i = loc;                 // position in filter
-        let mut pairs = pairs.iter();    // position in pairs
-        let mut hash;
+        let mut pairs = pairs.iter();    // pairs iterable
+        let mut stored_hash;
         match pairs.next() {
-            Some((_, h)) => {
-                hash = *h;
+            Some((_, hash)) => {
+                stored_hash = *hash;
             }
             None => panic!("Empty pairs!")
         }
@@ -391,9 +458,9 @@ impl AQF {
             if self.remainder(i) == query_rem && self.ext_matches(block_exts[i%64], query_hash) {
                 // If we get a match, adapt on the current (elt, hash) pair
                 // and advance to the next elt, hash pair
-                self.adapt_loc(i, query_quot, query_rem, hash, query_hash, &mut block_exts);
-                if let Some((_, remote_hash)) = pairs.next() {
-                    hash = *remote_hash;
+                self.adapt_loc(i, query_quot, query_rem, stored_hash, query_hash, &mut block_exts);
+                if let Some((_, hash)) = pairs.next() {
+                    stored_hash = *hash;
                 } else {
                     // Exit when we've run out of (elt, hash) pairs
                     break;
@@ -411,7 +478,8 @@ impl AQF {
         }
     }
     /// Adapt on a false match for a fingerprint at loc
-    fn adapt_loc(&mut self, loc: usize, quot: usize, rem: Rem, member_hash: u128, non_member_hash: u128, exts: &mut [Ext; 64]) {
+    fn adapt_loc(&mut self, loc: usize, quot: usize, rem: Rem,
+                 member_hash: u128, non_member_hash: u128, exts: &mut [Ext; 64]) {
         let new_ext = self.shortest_diff_ext(member_hash, non_member_hash);
         assert_ne!(new_ext, Ext::None,
                    "Hashes were identical, member_hash={}, non_member_hash={}",
@@ -461,7 +529,7 @@ impl AQF {
                 }
             });
     }
-    fn raw_query(&mut self, hash: u128, elt: &str) -> bool {
+    fn raw_query(&mut self, elt: &str, hash: u128) -> bool {
         let query_hash = hash;
         let quot = self.calc_quot(query_hash);
         let rem = self.calc_rem(query_hash);
@@ -493,7 +561,7 @@ impl AQF {
                         let ext = exts[loc%64];
                         if self.ext_matches(ext, query_hash) {
                             // Extensions match => check remote to see if true match
-                            let pairs = self.remote.get(quot, rem, ext);
+                            let pairs = self.remote.get_consistent(quot, rem, ext);
                             debug_assert!(
                                 !pairs.is_empty(),
                                 "Each stored fingerprint must have a corresponding entry in the \
@@ -528,6 +596,17 @@ impl AQF {
             }
         }
     }
+    // TODO: take in ext?
+    // FIXME: insert should shift extensions
+    fn raw_insert(&mut self, quot: usize, rem: Rem, elt: String, hash: u128) {
+        // Don't insert duplicates
+        if !self.remote.contains(quot, rem, Ext::None, &elt, hash) {
+            // Use RSQF insert to add elt
+            RankSelectQuotientFilter::raw_insert(self, quot, rem);
+            // Add elt entry to remote rep
+            self.remote.add(quot, rem, Ext::None, elt, hash);
+        }
+    }
     /// Returns true if the extension is consistent with the query hash, false otherwise.
     ///
     /// For an extension of length `len` with bits `bits`, checks if the bits in the query hash
@@ -552,19 +631,14 @@ impl AQF {
 
 impl Filter<String> for AQF {
     fn query(&mut self, elt: String) -> bool {
-        let query_hash = self.hash(&elt[..]);
-        self.raw_query(query_hash, &elt[..])
+        let query_hash = self.hash(&elt);
+        self.raw_query(&elt, query_hash)
     }
-    // FIXME: insert should shift extensions
     fn insert(&mut self, elt: String) {
         let hash = self.hash(&elt[..]);
         let quot = self.calc_quot(hash);
         let rem = self.calc_rem(hash);
-        // Don't insert duplicates FIXME
-        if !self.remote.contains(quot, rem, Ext::None, &elt[..], hash) {
-            self.raw_insert(quot, rem);
-            self.remote.add(quot, rem, Ext::None, elt, hash);
-        }
+        AQF::raw_insert(self, quot, rem, elt, hash);
     }
 }
 
@@ -640,7 +714,7 @@ mod tests {
             let hash = filter.hash(&elt);
             let quot = filter.calc_quot(hash);
             let rem = filter.calc_rem(hash);
-            filter.raw_insert(quot, rem);
+            RankSelectQuotientFilter::raw_insert(&mut filter, quot, rem);
             filter.remote.add(quot, rem, Ext::Some{bits: 1, len: 1}, elt, hash);
         }
         // Edit codes
@@ -691,7 +765,7 @@ mod tests {
             // eprintln!("i={}, ext={:?}", i, ext);
             exts[i%64] = ext;
             let code = ExtensionArcd::encode(exts).unwrap();
-            filter.raw_insert(quot, rem);
+            RankSelectQuotientFilter::raw_insert(&mut filter, quot, rem);
             filter.remote.add(quot, rem, ext, elt, hash);
             filter.blocks[i/64].extensions = code;
         }
@@ -706,7 +780,7 @@ mod tests {
             }
             // eprintln!("i={}, hash=0b{:b}, filter={:#?}", i, hash, filter);
             assert!(
-                filter.raw_query(hash, elt),
+                filter.raw_query(elt, hash),
                 "Filter doesn't contain elt {}",
                 elt);
         }
@@ -781,5 +855,39 @@ mod tests {
             }
         }
         println!("FP rate: {}", (fps as f64)/(a as f64));
+    }
+    /// Make a hash for elt where quot is 0 and rem is all 1s
+    fn fake_hash(filter: &AQF, elt: &str) -> u128 {
+        let hash = filter.hash(elt);
+        (hash | ((1 << filter.r) - 1)) << filter.q
+    }
+    #[test]
+    fn test_adapt() {
+        // Add multiple elements with the same quot, rem
+        let mut filter = AQF::new(64, 4);
+        for i in 0..10 {
+            let elt = format!("elt[{}]", i);
+            let hash = fake_hash(&filter, &elt);
+            let quot = filter.calc_quot(hash);
+            assert_eq!(quot, 0);
+            let rem = filter.calc_rem(hash);
+            assert_eq!(rem, 0b1111);
+            filter.raw_insert(quot, rem, elt, hash);
+        }
+        //eprintln!("filter={:#?}", filter);
+        // Query on elts w/ same quot, rem
+        for i in 11..20 {
+            let elt = format!("elt[{}]", i);
+            let hash = fake_hash(&filter, &elt);
+            filter.raw_query(&elt, hash);
+            //eprintln!("elt={}, filter={:#?}", elt, filter);
+            for j in 0..10 {
+                let elt = format!("elt[{}]", j);
+                let hash = fake_hash(&filter, &elt);
+                assert!(filter.raw_query(&elt, hash),
+                        "filter doesn't contain elt={}", elt);
+            }
+        }
+
     }
 }

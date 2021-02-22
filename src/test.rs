@@ -107,8 +107,8 @@ pub fn file_fpr_test(path: &str, n_uniq_lines: usize, a_s: f64, load: f64, rem_s
         }
     }
     println!("False positives: {} ({}%), repeated: {} ({}%)",
-             n_fps, (n_fps as f64)/(n_queries as f64),
-             n_rfps, (n_rfps as f64)/(n_queries as f64));
+             n_fps, (n_fps as f64)/(n_queries as f64) * 100_f64,
+             n_rfps, (n_rfps as f64)/(n_queries as f64) * 100_f64);
     println!("False negatives: {} ({}%)",
-             n_fns, (n_fns as f64)/(n_queries as f64));
+             n_fns, (n_fns as f64)/(n_queries as f64) * 100_f64);
 }

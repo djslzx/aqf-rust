@@ -122,7 +122,7 @@ mod remote {
                 .entries(self.data.iter().map(|(&(q, r), vec)| {(
                     format!("{}, {}", q, r),
                     vec.iter()
-                        .map(|(e, s, h)| format!("{}, {}, {:x}", e, s, h))
+                        .map(|(e, s, h)| format!("{}, {}, 0x{:x}", e, s, h))
                         .collect::<Vec<String>>()
                 )}))
                 .finish()
@@ -136,14 +136,17 @@ mod remote {
                 data
             }
         }
+        /// Returns true if the remote rep contains no elements
         pub fn is_empty(&self) -> bool {
             self.data.is_empty()
         }
+        /// Get a vector of all the items in the remote rep
         pub fn items(&self) -> Vec<(&(Quot, Rem), &Vec<(Ext, String, u128)>)> {
             self.data.iter().collect()
         }
         /// Inserts the mapping `(quot, rem, ext) -> (elt, hash)` into the remote representation
         pub fn add(&mut self, quot: Quot, rem: Rem, ext: Ext, elt: String, hash: u128) {
+            // TODO: check that quot, rem, ext are consistent with hash (requires hooking up with global state)
             match self.data.get_mut(&(quot, rem)) {
                 Some(v) => {
                     v.push((ext, elt, hash));
@@ -179,8 +182,24 @@ mod remote {
                 None => Vec::new(),
                 Some(vec) => {
                     vec.iter()
-                        .filter_map(|(e, elt, hash)|
-                            if Remote::consistent(*e, ext) {
+                        .filter_map(|(xt, elt, hash)|
+                            if Remote::consistent(*xt, ext) {
+                                Some((elt.clone(), *hash))
+                            } else {
+                                None
+                            })
+                        .collect()
+                }
+            }
+        }
+        /// Returns all `(elt, hash)` pairs that match the fingerprint `quot:rem:ext`.`
+        pub fn get_matching(&self, quot: Quot, rem: Rem, ext: Ext) -> Vec<(String, u128)> {
+            match self.data.get(&(quot, rem)) {
+                None => Vec::new(),
+                Some(vec) => {
+                    vec.iter()
+                        .filter_map(|(xt, elt, hash)|
+                            if *xt == ext {
                                 Some((elt.clone(), *hash))
                             } else {
                                 None
@@ -343,6 +362,7 @@ mod remote {
     }
 }
 use remote::Remote;
+use std::iter::{Map, Zip};
 
 #[derive(Debug)]
 pub struct AQF {
@@ -360,7 +380,7 @@ pub struct AQF {
 
     // Remote representation
     // (quot, rem, ext) -> (elt, hash)
-    remote: Remote<String>,
+    pub remote: Remote<String>,
 }
 
 impl RankSelectQuotientFilter for AQF {
@@ -418,7 +438,7 @@ impl AQF {
                       "Extension overflowed 64 bits at {}",
                       self.q + self.r + k <= 64);
         let hash = hash >> (self.q + self.r);
-        (hash & ((1 << k) - 1)) as u64
+        (hash & b128::mask(k)) as u64
     }
     /// Generate the shortest extension from the member's hash that doesn't conflict with
     /// the non-member's hash. 
@@ -432,62 +452,70 @@ impl AQF {
         } else {
             // Find fewest LSBs needed to distinguish member from non-member hash:
             // Determine number of common LSBs and add 1
-            let len = (a ^ b).trailing_zeros() + 1;
-            let bits = a & ((1 << len) - 1); // mask len bits from member hash
+            let len = ((a ^ b).trailing_zeros() + 1) as usize;
+            let bits = a & b128::mask(len); // mask len bits from member hash
             Ext::Some {
                 bits: bits as u64,
                 len: len as usize,
             }
         }
     }
-    /// Adapt on a false match for all remote rep entries in pairs
-    fn adapt(&mut self, loc: usize, query_quot: usize, query_rem: Rem, query_hash: u128,
-             pairs: Vec<(String, u128)>, block_exts: [Ext; 64]) {
-        let mut i = loc;                 // position in filter
-        let mut pairs = pairs.iter();    // pairs iterable
-        let mut stored_hash;
-        match pairs.next() {
-            Some((_, hash)) => {
-                stored_hash = *hash;
-            }
-            None => panic!("Empty pairs!")
-        }
-        let mut block_exts = block_exts; // in case the run spans multiple blocks
-        loop {
-            // Check if rem, ext match (quot already matches b/c we're in its run)
-            if self.remainder(i) == query_rem && self.ext_matches(block_exts[i%64], query_hash) {
-                // If we get a match, adapt on the current (elt, hash) pair
-                // and advance to the next elt, hash pair
-                self.adapt_loc(i, query_quot, query_rem, stored_hash, query_hash, &mut block_exts);
-                if let Some((_, hash)) = pairs.next() {
-                    stored_hash = *hash;
-                } else {
-                    // Exit when we've run out of (elt, hash) pairs
-                    break;
+    /// Returns true if `elt` is in the filter, false otherwise.
+    ///
+    /// Determines whether `elt` is in the filter by checking whether there is
+    /// a remote element associated with the triple `(quot, rem, ext)`.
+    fn is_true_match(&self, elt: &str, quot: usize, rem: Rem, ext: Ext) -> bool {
+        let matched_elts = self.remote.get_matching(quot, rem, ext);
+        debug_assert!(!matched_elts.is_empty());
+        let exact_match = matched_elts.iter().find(|(e, _)| *e == elt);
+        exact_match != None
+    }
+    /// Adapt on a false match at `loc`.
+    fn adapt(&mut self, loc: usize, quot: usize, rem: Rem, ext: Ext, hash: u128, exts: [Ext; 64]) {
+        // eprintln!("Calling adapt with loc={}, quot={}, rem={:x}, ext={}, hash={:x}, exts={:?}",
+        //           loc, quot, rem, ext, hash, exts);
+        let mut exts = exts;
+        // Collect locations that match rem, ext
+        let locs: Vec<usize> = (quot..=loc)
+            .rev()// iterate backwards over [loc, quot]
+            .take_while(|&i| i == loc || !self.is_runend(i))// don't step back further if we see a runend
+            .filter_map(|i| {
+                // Re-decode at i if we're in a new block
+                if i != loc && i % 64 == 63 {
+                    exts = ExtensionArcd::decode(self.blocks[i/64].extensions);
                 }
-            }
-            // Make sure we don't go off the end of the run:
-            // we should terminate before this point by running out of pairs
-            debug_assert!(i > query_quot && !self.is_runend(i-1),
-                          "Went off the end of the run before running out of remote pairs!");
-            i -= 1;
-            // Update decoded block_exts if we enter a new block
-            if i % 64 == 63 {
-                block_exts = ExtensionArcd::decode(self.blocks[i/64].extensions);
-            }
+                let i_rem = self.remainder(i);
+                let i_ext = exts[i%64];
+                if i_rem == rem && i_ext == ext {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let stored_hashes: Vec<u128> = self.remote.get_matching(quot, rem, ext)
+            .iter()
+            .map(|(_, hash)| *hash)
+            .collect();
+        debug_assert_eq!(locs.len(), stored_hashes.len(),
+                         "Matching local elts and remote elts should have the same size: \
+                          locs={:#?}, hashes={:#x?}, quot={}, rem={:x}, ext={}",
+                         locs, stored_hashes, quot, rem, ext);
+        for (i, stored_hash) in locs.iter().zip(stored_hashes) {
+            self.adapt_loc(*i, quot, rem, stored_hash, hash);
         }
     }
     /// Adapt on a false match for a fingerprint at loc
-    fn adapt_loc(&mut self, loc: usize, quot: usize, rem: Rem,
-                 member_hash: u128, non_member_hash: u128, exts: &mut [Ext; 64]) {
-        let new_ext = self.shortest_diff_ext(member_hash, non_member_hash);
+    fn adapt_loc(&mut self, loc: usize, quot: usize, rem: Rem, in_hash: u128, out_hash: u128) {
+        let new_ext = self.shortest_diff_ext(in_hash, out_hash);
         assert_ne!(new_ext, Ext::None,
-                   "Hashes were identical, member_hash={}, non_member_hash={}",
-                   member_hash, non_member_hash);
+                   "Hashes were identical, member_hash={:x}, non_member_hash={:x}",
+                   in_hash, out_hash);
         // Write encoding to the appropriate block
+        let mut exts = ExtensionArcd::decode(self.blocks[loc/64].extensions);
         let old_ext = exts[loc%64];
         exts[loc%64] = new_ext;
-        match ExtensionArcd::encode(*exts) {
+        match ExtensionArcd::encode(exts) {
             Ok(code) => {
                 // Update code and add new extension to remote
                 self.blocks[loc/64].extensions = code;
@@ -495,15 +523,17 @@ impl AQF {
             }
             Err(_) => {
                 // Encoding failed: rebuild
-                // Clear all extensions in the offending block + in remote rep
+                // Clear all extensions in the offending block in remote rep
                 self.clear_block_remote_exts(loc/64);
-                // Write new extension encoding
-                *exts = [Ext::None; 64];
+                // Write new extension encoding where loc has the new extension
+                // and all other extensions are cleared
+                exts = [Ext::None; 64];
                 exts[loc%64] = new_ext;
-                match ExtensionArcd::encode(*exts) {
+                match ExtensionArcd::encode(exts) {
                     Ok(code) => {
+                        // Write code to block
                         self.blocks[loc/64].extensions = code;
-                        // Add new extension back into the remote
+                        // Add new extension into remote rep
                         self.remote.update_ext(quot, rem, Ext::None, new_ext);
                     }
                     Err(_) =>
@@ -530,9 +560,10 @@ impl AQF {
             });
     }
     fn raw_query(&mut self, elt: &str, hash: u128) -> bool {
-        let query_hash = hash;
-        let quot = self.calc_quot(query_hash);
-        let rem = self.calc_rem(query_hash);
+        let quot = self.calc_quot(hash);
+        let rem = self.calc_rem(hash);
+
+        // let print = elt == "4119997257052773763" || elt == "7195797671440345694";
 
         if !self.is_occupied(quot) {
             false
@@ -556,29 +587,13 @@ impl AQF {
                             }
                         }
                         // Check if extensions match:
-                        // We should be able to unwrap cached decode w/o error b/c of the previous match
                         let exts = decode.unwrap().1;
                         let ext = exts[loc%64];
-                        if self.ext_matches(ext, query_hash) {
-                            // Extensions match => check remote to see if true match
-                            let pairs = self.remote.get_consistent(quot, rem, ext);
-                            debug_assert!(
-                                !pairs.is_empty(),
-                                "Each stored fingerprint must have a corresponding entry in the \
-                                 remote rep: [quot={}, rem={}, ext={}] has no entry",
-                                quot, rem, ext
-                            );
-                            // Check if any of the (elt, hash) pairs stored in the remote rep
-                            // match the query elt
-                            match pairs.iter().find(|(e, _)| *e == elt) {
-                                None => {
-                                    // If false match, adapt on all elt/hash pairs
-                                    // FIXME: I had to change pairs to use strings instead of slices b/c of borrowing checks,
-                                    //  and that might slow things down; might make sense to put everything in this block
-                                    //  in the same function
-                                    self.adapt(loc, quot, rem, query_hash, pairs, exts);
-                                }
-                                Some(_) => {}
+                        if self.ext_matches(ext, hash) {
+                            if !self.is_true_match(elt, quot, rem, ext) {
+                               // eprintln!("False match for {}:0x{:x}:{} -> ({},0x{:x}), adapting",
+                               //           quot, rem, ext, elt, hash);
+                               self.adapt(loc, quot, rem, ext, hash, exts);
                             }
                             return true;
                         }
@@ -859,10 +874,10 @@ mod tests {
     /// Make a hash for elt where quot is 0 and rem is all 1s
     fn fake_hash(filter: &AQF, elt: &str) -> u128 {
         let hash = filter.hash(elt);
-        (hash | ((1 << filter.r) - 1)) << filter.q
+        (hash | b128::mask(filter.r)) << filter.q
     }
     #[test]
-    fn test_adapt() {
+    fn test_adapt_1() {
         // Add multiple elements with the same quot, rem
         let mut filter = AQF::new(64, 4);
         for i in 0..10 {
@@ -874,20 +889,43 @@ mod tests {
             assert_eq!(rem, 0b1111);
             filter.raw_insert(quot, rem, elt, hash);
         }
-        //eprintln!("filter={:#?}", filter);
+        eprintln!("filter={:#?}", filter);
         // Query on elts w/ same quot, rem
         for i in 11..20 {
             let elt = format!("elt[{}]", i);
             let hash = fake_hash(&filter, &elt);
+            eprintln!("querying with elt={}, hash={:x}", elt, hash);
             filter.raw_query(&elt, hash);
-            //eprintln!("elt={}, filter={:#?}", elt, filter);
+            eprintln!("after querying elt={}, filter={:#?}", elt, filter);
             for j in 0..10 {
                 let elt = format!("elt[{}]", j);
                 let hash = fake_hash(&filter, &elt);
                 assert!(filter.raw_query(&elt, hash),
-                        "filter doesn't contain elt={}", elt);
+                        "filter should still contain elt={}, hash={:x}",
+                        elt, hash);
             }
         }
+    }
+    #[test]
+    fn test_adapt_2() {
+        let q = 6;
+        let r = 4;
+        let mut filter = AQF::new(1 << 6, r);
+        assert_eq!(q, filter.q);
+        let elt = "elt[0]".to_string();
+        filter.raw_insert(0, 0, elt, 0);
+        eprintln!("filter={:#?}", filter);
 
+        // Adapt by adding a 0 to ext
+        filter.raw_query("elt[1]", !0 << (q + r));
+        eprintln!("filter={:#?}", filter);
+        let exts = ExtensionArcd::decode(filter.blocks[0].extensions);
+        assert_eq!(exts[0], Ext::Some{bits: 0, len: 1});
+
+        // Adapt by adding two 0s to ext
+        filter.raw_query("elt[2]", !0 << (q + r + 1));
+        eprintln!("filter={:#?}", filter);
+        let exts = ExtensionArcd::decode(filter.blocks[0].extensions);
+        assert_eq!(exts[0], Ext::Some{bits: 0, len: 2});
     }
 }

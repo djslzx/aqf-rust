@@ -13,7 +13,7 @@
 
 ## Debugging
 ### AQF false negatives
-Interaction of conflicting policies is leading the extensions for two remote elts to get swapped
+Interaction of conflicting policies is leading the extensions for two remote elts to get swapped?
 
 ```
 query elt=4119997257052773763, hash=48677434032986450364517961118245206850, block=Block {

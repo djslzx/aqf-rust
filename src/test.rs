@@ -42,6 +42,7 @@ pub fn file_fpr_test(path: &str, n_uniq_lines: usize, a_s: f64, load: f64, rem_s
     // Initialize filter and pull lines from file
     eprintln!("Initializing filter and pulling lines from file...");
     let mut filter = AQF::new(s, rem_size);
+    // let mut filter = RSQF::new(s, rem_size);
     let mut set = HashSet::new();
     let fstr = fs::read_to_string(path).unwrap();
     let mut lines = fstr.lines();

@@ -10,6 +10,8 @@ use crate::util::{
 };
 use std::fmt;
 
+const CHECK_REP: bool = false;
+
 /// Abstraction for blocks used in RSQF
 pub trait RankSelectBlock: fmt::Debug {
     // Required methods:
@@ -115,57 +117,59 @@ pub trait RankSelectQuotientFilter {
     /// Checks that representation invariants are met
     #[cfg(debug_assertions)]
     fn check_rep(&self) {
-        // Check offsets
-        for i in 0..self.nblocks() {
-            let b = self.block(i);
-            let b_start = i * 64;
-            let runend = self.rank_select(b_start);
-            if b.is_occupied(0) {
-                assert_eq!(
-                    runend, RankSelectResult::Full(b_start + b.offset()),
-                    "B[0] occupied => offset points to B[0]'s runend; blocks[{},{}]={:#?}",
-                    i, i + b.offset()/64,
-                    (i..=(i+b.offset()/64))
-                        .map(|j| self.block(j))
-                        .collect::<Vec<&Self::Block>>(),
-                );
-            } else { // b[0] is unoccupied
-                if b.offset() == 0 {
-                    if b.is_runend(0) {
-                        assert_eq!(
-                            runend, RankSelectResult::Full(b_start),
-                            "B[0] unoccupied, B.offset = 0, B[0] is runend => \
-                             last prior run ends at B[0]; blocks[{}]={:#?}",
-                            i, b,
-                        );
-                    } else {
-                        assert_eq!(
-                            runend, RankSelectResult::Empty,
-                            "B[0] unoccupied, B.offset = 0, B[0] is not runend => \
-                             last prior run ends before B[0] (negative offset); blocks[{}]={:#?}",
-                            i, b,
-                        );
-                    }
-                } else { // b.offset > 0
+        if CHECK_REP {
+            // Check offsets
+            for i in 0..self.nblocks() {
+                let b = self.block(i);
+                let b_start = i * 64;
+                let runend = self.rank_select(b_start);
+                if b.is_occupied(0) {
                     assert_eq!(
                         runend, RankSelectResult::Full(b_start + b.offset()),
-                        "B[0] unoccupied, B.offset > 0 => \
-                         prior runend ends at B.start + B.offset; blocks[{}]={:#?}",
-                        i, b
+                        "B[0] occupied => offset points to B[0]'s runend; blocks[{},{}]={:#?}",
+                        i, i + b.offset() / 64,
+                        (i..=(i + b.offset() / 64))
+                            .map(|j| self.block(j))
+                            .collect::<Vec<&Self::Block>>(),
                     );
+                } else { // b[0] is unoccupied
+                    if b.offset() == 0 {
+                        if b.is_runend(0) {
+                            assert_eq!(
+                                runend, RankSelectResult::Full(b_start),
+                                "B[0] unoccupied, B.offset = 0, B[0] is runend => \
+                             last prior run ends at B[0]; blocks[{}]={:#?}",
+                                i, b,
+                            );
+                        } else {
+                            assert_eq!(
+                                runend, RankSelectResult::Empty,
+                                "B[0] unoccupied, B.offset = 0, B[0] is not runend => \
+                             last prior run ends before B[0] (negative offset); blocks[{}]={:#?}",
+                                i, b,
+                            );
+                        }
+                    } else { // b.offset > 0
+                        assert_eq!(
+                            runend, RankSelectResult::Full(b_start + b.offset()),
+                            "B[0] unoccupied, B.offset > 0 => \
+                         prior runend ends at B.start + B.offset; blocks[{}]={:#?}",
+                            i, b
+                        );
+                    }
                 }
             }
-        }
-        // Check that if offset is 0, there is no runend before the first occupied bit
-        // unless the runend is at 0
-        for i in 0..self.nblocks() {
-            let block = self.block(i);
-            if block.offset() == 0 && !block.is_runend(0) {
-                assert!(
-                    block.occupieds().trailing_zeros() <= block.runends().trailing_zeros(),
-                    "Block {}'s occupieds start later than its runends even though it has 0 offset; block={:#?}",
-                    i, block,
-                )
+            // Check that if offset is 0, there is no runend before the first occupied bit
+            // unless the runend is at 0
+            for i in 0..self.nblocks() {
+                let block = self.block(i);
+                if block.offset() == 0 && !block.is_runend(0) {
+                    assert!(
+                        block.occupieds().trailing_zeros() <= block.runends().trailing_zeros(),
+                        "Block {}'s occupieds start later than its runends even though it has 0 offset; block={:#?}",
+                        i, block,
+                    )
+                }
             }
         }
     }
@@ -178,7 +182,7 @@ pub trait RankSelectQuotientFilter {
     }
     /// Use first q bits of quotient
     fn calc_quot(&self, hash: u128) -> usize {
-        (hash & b128::ones(self.q())) as usize
+        (hash & b128::mask(self.q())) as usize
     }
     fn calc_rem(&self, hash: u128) -> Rem {
         ((hash & b128::half_open(self.q(), self.q() + self.r())) >> self.q()) as Rem

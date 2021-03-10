@@ -21,7 +21,7 @@ pub fn join_debug<I>(collection: I, sep: &str) -> String
           I::Item: std::fmt::Debug {
     collection
         .into_iter()
-        .map(|x| format!("{:#?}", x))
+        .map(|x: I::Item| format!("{:#?}", x))
         .collect::<Vec<String>>()
         .join(sep)
 }

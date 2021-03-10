@@ -3,6 +3,7 @@ use std::{
     fs,
     io,
 };
+#[allow(unused_imports)]
 use crate::{util,
             rsqf::{
                 RankSelectQuotientFilter,
@@ -49,7 +50,7 @@ pub fn file_fpr_test(path: &str, n_uniq_lines: usize, a_s: f64, load: f64, rem_s
 
     // Insert `s` items into the filter and set
     eprintln!("Inserting {} items into filter...", s);
-    for _ in 0..s {
+    for i in 0..s {
         let elt = lines.next().unwrap().to_string();
         set.insert(elt.clone());
         filter.insert(elt.clone());
@@ -58,17 +59,21 @@ pub fn file_fpr_test(path: &str, n_uniq_lines: usize, a_s: f64, load: f64, rem_s
         assert!(set.contains(&elt.clone()),
                 "Set doesn't contain inserted elt={}", elt.clone());
         if !filter.query(elt.clone()) {
+            eprintln!("Filter missing elt #{}", i);
             let hash = filter.hash(&elt.clone());
             let quot = filter.calc_quot(hash);
             let rem = filter.calc_rem(hash);
+            // let ext = filter.calc_ext(hash, 1);
             let block_neighborhood = [
                 filter.block(quot/64 - 1),
                 filter.block(quot/64),
                 filter.block(quot/64 + 1),
             ];
-            eprintln!(
-                "Filter doesn't contain elt={}; quot={} (block_i={}, slot_i={}), rem=0x{:x}, blocks={:#?}",
-                elt, quot, quot/64, quot%64, rem, block_neighborhood,
+            panic!(
+                "Filter doesn't contain elt={}, hash=0x{:x}; quot={} (block_i={}, slot_i={}), rem=0x{:x}, blocks={:#?};\
+                 filter: q={}, r={}",
+                elt, hash, quot, quot/64, quot%64, rem, block_neighborhood,
+                filter.q(), filter.r(),
             );
         }
     }
@@ -100,9 +105,8 @@ pub fn file_fpr_test(path: &str, n_uniq_lines: usize, a_s: f64, load: f64, rem_s
                 let rem = filter.calc_rem(hash);
                 let block = filter.block(quot/64);
                 panic!(
-                    "False negative on {}; quot={} (block_i={}, slot_i={}), rem=0x{:x}, block={:#?}\
-                     remote={:#?}",
-                    elt, quot, quot/64, quot%64, rem, block, filter.remote.data.get(&(quot, rem)),
+                    "False negative on {}; quot={} (block_i={}, slot_i={}), rem=0x{:x}, block={:#?}",
+                    elt, quot, quot/64, quot%64, rem, block,
                 );
             }
         }

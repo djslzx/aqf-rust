@@ -558,16 +558,17 @@ mod tests {
             );
         }
     }
-    /// Use filter's hash fn but set quotient bits to 0, remainder bits to 1s
+    /// Use filter's hash fn but set quotient bits to 0, remainder bits to all-1s
     fn hash_trunc(filter: &AQF, elt: &str) -> u128 {
         let (r, q) = (filter.r, filter.q);
         let hash = filter.hash(elt);
+        // Clear quotient bits, add rem bits (all 1s)
         (hash & !b128::half_open(0, q)) | b128::half_open(q, q+r)
     }
-    // FIXME
+    /// Build a filter with `n` extensions following `ext_policy`,
+    /// a function of (filter, hash, pos) -> Ext
     fn build_and_test_repeating<F>(n: usize, ext_policy: F)
         where F: FnOnce(&AQF, u128, usize) -> Ext + Copy {
-        // Build filter with n extensions, following `ext_policy`
         let mut filter = AQF::new(64, 4);
         let mut exts = [Ext::None; 64];
         for i in 0..n {
@@ -575,11 +576,12 @@ mod tests {
             let hash = hash_trunc(&filter, &elt[..]);
             let quot = filter.calc_quot(hash);
             let rem = filter.calc_rem(hash);
+            filter.raw_insert(quot, rem, elt, hash);
+
+            // Use policy to generate extension, then add to filter
             let ext = ext_policy(&filter, hash, i);
-            // eprintln!("i={}, ext={:?}", i, ext);
             exts[i%64] = ext;
             let code = ExtensionArcd::encode(exts).unwrap();
-            filter.raw_insert(quot, rem, elt, hash);
             filter.blocks[i/64].extensions = code;
         }
 
@@ -588,12 +590,13 @@ mod tests {
             let elt = &i.to_string()[..];
             let mut hash = hash_trunc(&filter, elt);
             if let Ext::Some{bits, len} = ext_policy(&filter, hash, i) {
+                // Add bits to hash
                 hash |= (bits as u128) << (filter.q + filter.r + len);
             }
             // eprintln!("i={}, hash=0b{:b}, filter={:#?}", i, hash, filter);
             assert!(
                 filter.raw_query(elt, hash),
-                "Filter doesn't contain elt {}",
+                "Filter should contain elt {}",
                 elt);
         }
     }
@@ -748,22 +751,22 @@ mod tests {
             eprintln!("filter={:#?}", filter);
         }
 
-        // eprintln!("filter={:#?}", filter);
-        // // Query on elts w/ same quot, rem
-        // for i in 11..20 {
-        //     let elt = format!("elt[{}]", i);
-        //     let hash = fake_hash(&filter, &elt);
-        //     eprintln!("querying with elt={}, hash={:x}", elt, hash);
-        //     filter.raw_query(&elt, hash);
-        //     eprintln!("after querying elt={}, filter={:#?}", elt, filter);
-        //     for j in 0..10 {
-        //         let elt = format!("elt[{}]", j);
-        //         let hash = fake_hash(&filter, &elt);
-        //         assert!(filter.raw_query(&elt, hash),
-        //                 "filter should still contain elt={}, hash={:x}",
-        //                 elt, hash);
-        //     }
-        // }
+        eprintln!("filter={:#?}", filter);
+        // Query on elts w/ same quot, rem
+        for i in 6..20 {
+            let elt = format!("elt[{}]", i);
+            let hash = (filter.hash(&elt) << 11) | 0b111_1000_0000;
+            eprintln!("querying with elt={}, hash={:x}", elt, hash);
+            filter.raw_query(&elt, hash);
+            eprintln!("after querying elt={}, filter={:#?}", elt, filter);
+            for j in 0..5 {
+                let elt = format!("elt[{}]", j);
+                let hash = (filter.hash(&elt) << 11) | 0b111_1000_0000;
+                assert!(filter.raw_query(&elt, hash),
+                        "filter should still contain elt={}, hash={:x}",
+                        elt, hash);
+            }
+        }
     }
 
 }

@@ -3,6 +3,9 @@ use std::{
     fs,
     io,
 };
+use rand::{
+    Rng, SeedableRng, rngs::SmallRng
+};
 #[allow(unused_imports)]
 use crate::{util,
             rsqf::{
@@ -84,7 +87,7 @@ pub fn file_fpr_test(path: &str, n_uniq_lines: usize, a_s: f64, load: f64, rem_s
     let mut n_rfps = 0;    // number of repeated false positives
     let mut n_fns = 0;     // number of false negatives
     let mut n_queries = 0; // number of total queries
-    let mut seen = HashSet::new();
+    let mut prev_fps = HashSet::new();
     for line in lines {
         n_queries += 1;
         let elt = line.to_string();
@@ -92,10 +95,10 @@ pub fn file_fpr_test(path: &str, n_uniq_lines: usize, a_s: f64, load: f64, rem_s
         let in_set = set.contains(&elt.clone());
         if in_filter && !in_set { // false positive
             n_fps += 1;
-            if seen.contains(&elt.clone()) {
+            if prev_fps.contains(&elt.clone()) {
                 n_rfps += 1;
             } else {
-                seen.insert(elt.clone());
+                prev_fps.insert(elt.clone());
             }
         } else if !in_filter && in_set { // false negative
             n_fns += 1;
@@ -116,4 +119,74 @@ pub fn file_fpr_test(path: &str, n_uniq_lines: usize, a_s: f64, load: f64, rem_s
              n_rfps, (n_rfps as f64)/(n_queries as f64) * 100_f64);
     println!("False negatives: {} ({}%)",
              n_fns, (n_fns as f64)/(n_queries as f64) * 100_f64);
+}
+
+/// Test filter with randomly-generated queries
+pub fn synthetic_test(a_s: f64, load: f64, queries_per_elt: usize, rem_size: usize, n_trials: usize) {
+    println!("Running synthetic test with a_s={}, load={}, queries_per_elt={}, rem_size={}, n_trials={}",
+             a_s, load, queries_per_elt, rem_size, n_trials);
+
+    let n_slots = 1 << 14; // 16384
+    let s = (util::nearest_pow_of_2(n_slots) as f64 * load) as usize;
+    let a = (s as f64 * a_s) as usize;
+    let n_queries = a * queries_per_elt;
+
+    // Initialize member set
+    eprintln!("Initializing filter and generating member set...");
+    let mut rng = SmallRng::seed_from_u64(0);
+    let mut set = HashSet::with_capacity(s);
+
+    // Perform query trials
+    eprintln!("Starting query trials...");
+    let mut n_fps = 0;  // false positives
+    let mut n_rfps = 0; // repeated false positives
+    let mut n_fns = 0;  // false negatives
+    let tot_queries = n_trials * n_queries;
+    for i in 0..n_trials {
+        // Initialize filter
+        let mut filter = AQF::new(s, rem_size);
+        // let mut filter = RSQF::new(s, rem_size);
+        for _ in 0..s {
+            let elt = rng.gen::<usize>().to_string();
+            set.insert(elt.clone());
+            filter.insert(elt.clone());
+        }
+
+        eprintln!("Performing query trial #{}...", i);
+        let mut prev_fps = HashSet::new();
+        let mut query_set: Vec<String> = Vec::with_capacity(a);
+        for _ in 0..a {
+            query_set.push(rng.gen::<usize>().to_string());
+        }
+
+        // Perform queries
+        for _ in 0..n_queries {
+            let elt = query_set.get(rng.gen::<usize>() % a).unwrap();
+            let in_filter = filter.query(elt.clone());
+            let in_set = set.contains(&elt.clone());
+            if in_filter && !in_set {
+                n_fps += 1;
+                if prev_fps.contains(&elt.clone()) {
+                    n_rfps += 1;
+                } else {
+                    prev_fps.insert(elt.clone());
+                }
+            } else if !in_filter && in_set {
+                n_fns += 1;
+            }
+        }
+        let queries_done = n_queries * (i+1);
+        // eprintln!("Trial results:");
+        // eprintln!("False positives: {} ({}%), repeated: {} ({}%)",
+        //           n_fps, (n_fps as f64)/(queries_done as f64) * 100_f64,
+        //           n_rfps, (n_rfps as f64)/(queries_done as f64) * 100_f64);
+        // eprintln!("False negatives: {} ({}%)",
+        //           n_fns, (n_fns as f64)/(queries_done as f64) * 100_f64);
+    }
+    println!("Test results:");
+    println!("False positives: {} ({}%), repeated: {} ({}%)",
+             n_fps, (n_fps as f64)/(tot_queries as f64) * 100_f64,
+             n_rfps, (n_rfps as f64)/(tot_queries as f64) * 100_f64);
+    println!("False negatives: {} ({}%)",
+             n_fns, (n_fns as f64)/(tot_queries as f64) * 100_f64);
 }

@@ -3,9 +3,7 @@ use std::{
     collections::HashMap,
     fmt,
 };
-#[macro_use]
 use crate::{
-    hashmap,
     Rem,
     Filter,
     util::{
@@ -358,10 +356,13 @@ impl AQF {
                         // Write new arithmetic code to block
                         self.blocks[loc/64].extensions = code;
                     }
-                    Err(_) =>
-                        panic!("Failed to encode after rebuilding block: \
-                                block={:?}, new_ext={:?}",
-                               self.blocks[loc/64], new_ext),
+                    Err(_) => {
+                        eprintln!("Failed to encode after rebuilding block: \
+                                  block={:#?}, new_ext={:?}",
+                                  self.blocks[loc/64], new_ext);
+                        // Clear extension
+                        self.blocks[loc/64].extensions = 0;
+                    }
                 }
             }
         }
